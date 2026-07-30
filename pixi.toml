@@ -1,0 +1,19 @@
+[workspace]
+name = "napari-worm-neuron-annotator-launcher"
+version = "0.1.0"
+description = "Launch datasets with Worm Neuron Annotator"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+
+[dependencies]
+python = ">=3.11,<3.15"
+napari = ">=0.8,<0.9"
+numpy = ">=2,<3"
+pyqt6 = ">=6,<7"
+openpyxl = ">=3.1"
+
+[pypi-dependencies]
+napari-worm-neuron-annotator = ">=0.2,<0.3"
+
+[tasks]
+start = "python script/launch_datasets.py"
