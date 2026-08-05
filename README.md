@@ -1,6 +1,6 @@
 # Worm Neuron Annotator Usage Guide
 
-This repository provides a reproducible launcher for opening compatible volumetric imaging datasets with napari plugin [`napari-worm-neuron-annotator`](https://pypi.org/project/napari-worm-neuron-annotator/). It loads an Image array, a neuron Labels array, and read-only neuron bounding-box ROIs, then opens the annotator directly in napari.
+This repository provides a reproducible launcher for opening compatible volumetric imaging datasets with napari plugin [`napari-worm-neuron-annotator`](https://pypi.org/project/napari-worm-neuron-annotator/). It loads an Image array and read-only neuron bounding-box ROIs, optionally adds a compatible Labels overlay, then opens the annotator directly in napari.
 
 The launcher script `launch_datasets.py` creates and docks the plugin automatically, so the plugin does not need to be opened manually from napari's **Plugins** menu.
 
@@ -11,20 +11,57 @@ The launcher script `launch_datasets.py` creates and docks the plugin automatica
 ## Prerequisites
 
 - [Pixi](https://pixi.sh/latest/installation/): Pixi is the recommended installation method because it provides a consistent, locked Python, napari, Qt, and plugin environment across supported platforms.
-- A compatible dataset containing the three NPY files described below:
+- A compatible dataset containing the two required NPY files described below. The Labels file is optional:
 
 ```text
 dataset/
 ├── volumes.npy
-├── neuron_mask.npy
-└── neuron_point_tuple.npy
+├── neuron_point_tuple.npy
+└── neuron_mask.npy       # optional
 ```
 
 | File                     | Expected content                                                                                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `volumes.npy`            | Image array with shape `(t, z, y, x)`                                                                                                                         |
 | `neuron_point_tuple.npy` | ROI array with shape `(T, N, K)`, where `K >= 6`. The first six fields are `x`, `y`, `z_scaled`, `width`, `height`, and `depth_scaled`.                          |
-| `neuron_mask.npy`        | Integer Labels array with the same `(t, z, y, x)` shape as `volumes.npy`; in ROI mode, `label_value = neuron_id + 1`.                                         |
+| `neuron_mask.npy`        | Optional integer Labels array with the same `(t, z, y, x)` shape as `volumes.npy`; in ROI mode, `label_value = neuron_id + 1`.                                |
+
+## Export a prepared dataset
+
+The preprocessing entry point at `preprocess/export_dataset_to_npy.py` converts selected TIFF volumes and their `dynamics.h5` ROI point clouds into the NPY files consumed by the launcher. TIFF reading, ROI loading, shared geometry, and export orchestration are kept in focused modules in the same directory; users only need to configure and run the entry point.
+
+Edit these settings near the top of the script:
+
+```python
+TIFF_PATH = Path(r"/path/to/tiff/source")
+DYNAMICS_PATH = Path(r"/path/to/dynamics.h5")
+OUTPUT_DIR = Path(r"/path/to/output/dataset")
+SELECTED_VOLUMES = [346, 361, 396]
+SAVE_MASK = False
+
+FRAMES_PER_VOLUME = 20
+Z_START_FRAME = 0
+Z_END_FRAME = 17
+
+ALIGN_XY = True
+GOAL_ANGLE_DEGREES = -90.0
+FLIP_X = False
+FLIP_Y = False
+```
+
+The script keeps the complete XY canvas; it does not crop images or point coordinates. ROI Z coordinates are shifted and, when configured, reversed together with the selected TIFF slice range. It writes the following files into `OUTPUT_DIR`:
+
+- `volumes.npy`: required `(T,Z,Y,X)` float32 Image array;
+- `neuron_point_tuple.npy`: required `(T,N,K)` ROI array;
+- `neuron_mask.npy`: optional Labels array, generated only when `SAVE_MASK = True`.
+
+Run preprocessing from the repository root:
+
+```bash
+pixi run preprocess
+```
+
+Point Z coordinates and depths retain their scaled source units. Set the launcher `Z_DIVISOR` to the same value as the preprocessing `Z_SCALE_RATIO` so ROI Z values map to the correct image slices.
 
 ## Quick start
 
@@ -41,9 +78,9 @@ Use Pixi to create the environment:
 pixi install
 ```
 
-### 2. Configure the dataset path
+### 2. Configure the source
 
-Open `script/launch_datasets.py` and edit `DATA_DIR` near the top of the file.
+Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the file. Use `"npy"` for prepared files, `"raw-eager"` to read and transform all selected TIFF data at startup, or `"raw-virtual"` to expose plane-chunked Dask data to napari.
 
 ### 3. Start the application
 
@@ -57,20 +94,31 @@ pixi run start
 
 The main dataset-specific settings are located near the top of `script/launch_datasets.py`:
 ```python
+SOURCE_MODE = "npy"
 
 DATA_DIR = Path("/path/to/dataset")
 
+# Used by raw-eager and raw-virtual modes.
+TIFF_PATH = Path("/path/to/tiff/source")
+DYNAMICS_PATH = Path("/path/to/dynamics.h5")
+SELECTED_VOLUMES = [346, 361, 396]
+
+LABELS_PATH = None
 Z_DIVISOR = 5.0
 LAYER_SCALE_TZYX = (1.0, 5.0, 1.0, 1.0)
 IMAGE_CONTRAST_LIMITS = (102, 400)
 ```
 
-| Parameter               | Meaning                                                       |
-| ----------------------- | ------------------------------------------------------------- |
-| `DATA_DIR`              | Directory containing the three input NPY files                |
-| `Z_DIVISOR`             | Converts scaled Z coordinates and depths into image Z indices |
-| `LAYER_SCALE_TZYX`      | napari layer scale in `(t, z, y, x)` order                    |
-| `IMAGE_CONTRAST_LIMITS` | Initial Image display contrast range                          |
+| Parameter               | Meaning                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `SOURCE_MODE`           | `npy`, `raw-eager`, or `raw-virtual`                                          |
+| `DATA_DIR`              | Directory containing the required NPY files in `npy` mode                     |
+| `TIFF_PATH`             | Numbered TIFF directory or multi-page stack used by both raw modes            |
+| `DYNAMICS_PATH`         | ROI and alignment HDF5 used by both raw modes                                 |
+| `LABELS_PATH`           | Optional Labels path; use `None` when no overlay is needed                     |
+| `Z_DIVISOR`             | Converts scaled ROI Z coordinates and depths to image indices                 |
+| `LAYER_SCALE_TZYX`      | napari layer scale in `(t, z, y, x)` order                                   |
+| `IMAGE_CONTRAST_LIMITS` | Initial Image display contrast range                                         |
 
 `IMAGE_CONTRAST_LIMITS` affects visualization only. The contrast limits can be adjusted later in the Image layer controls. Gamma is a separate display parameter.
 
@@ -78,18 +126,23 @@ IMAGE_CONTRAST_LIMITS = (102, 400)
 
 `Z_DIVISOR` and the Z component of `LAYER_SCALE_TZYX` serve different purposes. The former converts ROI coordinates to array indices; the latter defines napari world coordinates. Do not apply the layer Z scale to the ROI coordinates a second time.
 
+In both raw modes, `Z_DIVISOR` must equal `Z_SCALE_RATIO`. `raw-virtual` keeps TIFF planes as `(1,1,Y,X)` Dask chunks and reads them when requested. The plugin's initial Z-profile refresh still reads every Z plane at the first time point; later time points remain virtual until viewed. Raw ROI data is small and is transformed eagerly, written to a session-only temporary NPY for the plugin's path-based loader, and removed after the napari session closes.
+
 ## What happens at startup
 
-The launcher:
+In `npy` mode, the launcher:
 
-1. Checks that all three input files exist.
-2. Opens Image and Labels arrays using read-only NumPy memory mapping.
-3. Verifies matching four-dimensional `(t, z, y, x)` shapes.
-4. Verifies that the Labels array has an integer data type.
-5. Creates the napari viewer and adds the Image and Labels layers.
-6. Creates and docks the plugin.
-7. Loads the ROI file.
-8. Checks, activates, and locates the first valid neuron.
+1. Checks that `volumes.npy` and `neuron_point_tuple.npy` exist.
+2. Opens the Image array using read-only NumPy memory mapping.
+3. Verifies that the ROI and Image arrays have matching time dimensions.
+4. Applies the configured `Z_DIVISOR` when loading ROI coordinates.
+5. When `LABELS_PATH` is not `None`, opens that Labels file and verifies that it is an integer array matching the Image shape.
+6. Creates the napari viewer and adds the Image and optional Labels layers.
+7. Creates and docks the plugin.
+8. Loads the ROI file.
+9. Checks, activates, and locates the first valid neuron.
+
+In either raw mode, the launcher instead prepares Image and ROI arrays directly from `TIFF_PATH` and `DYNAMICS_PATH`. `raw-eager` returns a NumPy Image array; `raw-virtual` returns a Dask Image array. Both modes apply the same geometry code used by NPY export.
 
 ## Basic usage
 
@@ -110,7 +163,7 @@ The launcher:
 
 ## Z Layers
 
-The **Z Layers** panel can divide the volume into half-open Z ranges. In an individual Z layer, only the corresponding Image and Labels slices and boxes whose center Z belongs to that range are shown. Checked and active identities remain global.
+The **Z Layers** panel can divide the volume into half-open Z ranges. In an individual Z layer, only the corresponding Image, optional Labels slices, and boxes whose center Z belongs to that range are shown. Checked and active identities remain global.
 
 Bilaterally distributed or densely overlapping neurons may occlude one another in a full 3D view. Z Layers can divide the volume into two or more half-open Z ranges, making subsets of neurons easier to inspect. Each box is assigned as a whole according to its center Z coordinate. Use **Split** to create the Z layers, then use **Show** to select **All** or an individual Z layer.
 
@@ -134,25 +187,36 @@ The `biological` value is also used for selected box labels. If it is empty, the
 
 ![Neuron annotation](assets/neuron_annotation.png)
 
-## Labels Layer
+## Optional Labels Layer
 
-The current launcher requires `neuron_mask.npy` because the controlled Labels layer provides the display context for label colors, opacity control, spatial metadata, and Labels slices for Z-layer views. The ROI array remains the authoritative source of neuron identity and box geometry. In ROI mode, the explicit mapping is `label_value = neuron_id + 1`.
+Image + ROI is the primary workflow and does not require `neuron_mask.npy`. ROI-derived Vectors and Points provide neuron identity, box rendering, annotation, navigation, and Z-layer display. Leave `LABELS_PATH = None` when no mask overlay is needed, or set it to a compatible Labels file. The ROI array remains the authoritative source of neuron identity and box geometry; the optional mapping is `label_value = neuron_id + 1`.
 
-A dense or opaque Labels display may obscure the underlying image or the Vectors ROI boxes. When the mask display is not needed, hide the Labels layer with the eye icon in napari's layer list, or set both checked and unchecked label opacity to `0`. These operations affect display only and do not modify `neuron_mask.npy`.
+```python
+LABELS_PATH = DATA_DIR / "neuron_mask.npy"
+```
+
+When loaded, a dense or opaque Labels display may obscure the underlying image or the Vectors ROI boxes. Hide the Labels layer with the eye icon in napari's layer list, or set both checked and unchecked label opacity to `0`. These operations affect display only and do not modify `neuron_mask.npy`.
 
 ## Alternative installation with pip
 
-Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install the plugin with napari and a Qt backend:
+Pixi is recommended for reproducible use. The launcher currently pins a plugin commit that contains the Image + ROI workflow. If Pixi is not available, create a Python 3.11–3.14 environment and install the same plugin revision with napari and a Qt backend:
 
 ```bash
-pip install "napari-worm-neuron-annotator[all]"
+pip install "napari-worm-neuron-annotator[all] @ git+https://github.com/Wenlab/napari-worm-neuron-annotator.git@e0d3675437e434792ac51157820d316de2ff59f1"
 python script/launch_datasets.py
+```
+
+Install the preprocessing dependencies separately when running the TIFF and dynamics converter without Pixi:
+
+```bash
+pip install "dask[array]" h5py scipy tifffile
+python preprocess/export_dataset_to_npy.py
 ```
 
 If the Python environment already contains a working napari and Qt installation:
 
 ```bash
-pip install napari-worm-neuron-annotator
+pip install "napari-worm-neuron-annotator @ git+https://github.com/Wenlab/napari-worm-neuron-annotator.git@e0d3675437e434792ac51157820d316de2ff59f1"
 python script/launch_datasets.py
 ```
 
@@ -160,14 +224,16 @@ python script/launch_datasets.py
 
 ### Dataset files were not found
 
-Confirm that `DATA_DIR` points directly to the directory containing all three NPY files. Check path spelling and use a raw string for Windows paths:
+Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy` and `neuron_point_tuple.npy`. When `LABELS_PATH` is not `None`, confirm that it points to an existing `neuron_mask.npy`. Check path spelling and use a raw string for Windows paths:
 
 ```python
 DATA_DIR = Path(r"D:\data\worm_dataset")
 ```
-### Image and Labels shapes do not match
 
-`volumes.npy` and `neuron_mask.npy` must have identical four-dimensional `(t, z, y, x)` shapes.
+### Optional Image and Labels shapes do not match
+
+When optional Labels loading is enabled, `volumes.npy` and `neuron_mask.npy` must have identical four-dimensional `(t, z, y, x)` shapes.
+
 ### napari or Qt does not start
 
 First try the locked Pixi environment:
