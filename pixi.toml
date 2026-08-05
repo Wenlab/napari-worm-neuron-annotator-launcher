@@ -11,9 +11,14 @@ napari = ">=0.8,<0.9"
 numpy = ">=2,<3"
 pyqt6 = ">=6,<7"
 openpyxl = ">=3.1"
+h5py = ">=3.11,<4"
+scipy = ">=1.13,<2"
+tifffile = ">=2024.6"
+dask-core = ">=2024.6"
 
 [pypi-dependencies]
-napari-worm-neuron-annotator = ">=0.2,<0.3"
+napari-worm-neuron-annotator = "==0.3.0"
 
 [tasks]
 start = "python script/launch_datasets.py"
+preprocess = "python preprocess/export_dataset_to_npy.py"
