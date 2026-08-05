@@ -126,6 +126,9 @@ ipython_config.py
 .pixi/*
 !.pixi/config.toml
 
+# Generated local datasets
+data/
+
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
