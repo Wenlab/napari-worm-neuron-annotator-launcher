@@ -10,8 +10,10 @@ The launcher script `launch_datasets.py` creates and docks the plugin automatica
 
 ## Prerequisites
 
-- [Pixi](https://pixi.sh/latest/installation/): Pixi is the recommended installation method because it provides a consistent, locked Python, napari, Qt, and plugin environment across supported platforms.
-- A compatible dataset containing the two required NPY files described below. The Labels file is optional:
+- [Pixi](https://pixi.sh/latest/installation/). Pixi installs the locked Python, napari, Qt, plugin, TIFF, HDF5, and Dask dependencies.
+- One data source: either a prepared NPY dataset or the original TIFF data plus its `dynamics.h5` file. The Labels file is optional in both cases.
+
+A prepared dataset has this layout:
 
 ```text
 dataset/
@@ -22,9 +24,9 @@ dataset/
 
 | File                     | Expected content                                                                                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `volumes.npy`            | Image array with shape `(t, z, y, x)`                                                                                                                         |
-| `neuron_point_tuple.npy` | ROI array with shape `(T, N, K)`, where `K >= 6`. The first six fields are `x`, `y`, `z_scaled`, `width`, `height`, and `depth_scaled`.                          |
-| `neuron_mask.npy`        | Optional integer Labels array with the same `(t, z, y, x)` shape as `volumes.npy`; in ROI mode, `label_value = neuron_id + 1`.                                |
+| `volumes.npy`            | Image array with shape `(T, Z, Y, X)`. The bundled exporter writes `float32`.                                                                                  |
+| `neuron_point_tuple.npy` | ROI array with shape `(T, N, K)`, where `K >= 6`. The first six fields are `x`, `y`, `z_scaled`, `width`, `height`, and `depth_scaled`; the exporter writes `float32`. |
+| `neuron_mask.npy`        | Optional integer Labels array with the same `(T, Z, Y, X)` shape as `volumes.npy`; the exporter writes `int16`, with `label_value = neuron_id + 1`.            |
 
 ## Export a prepared dataset
 
@@ -52,8 +54,10 @@ FLIP_Y = False
 The script keeps the complete XY canvas; it does not crop images or point coordinates. ROI Z coordinates are shifted and, when configured, reversed together with the selected TIFF slice range. It writes the following files into `OUTPUT_DIR`:
 
 - `volumes.npy`: required `(T,Z,Y,X)` float32 Image array;
-- `neuron_point_tuple.npy`: required `(T,N,K)` ROI array;
-- `neuron_mask.npy`: optional Labels array, generated only when `SAVE_MASK = True`.
+- `neuron_point_tuple.npy`: required `(T,N,K)` float32 ROI array;
+- `neuron_mask.npy`: optional `(T,Z,Y,X)` int16 Labels array, generated only when `SAVE_MASK = True`.
+
+The exporter preserves the order of `SELECTED_VOLUMES`. When `SAVE_MASK = False`, it removes an existing `neuron_mask.npy` from `OUTPUT_DIR` so an old mask cannot be mistaken for current output.
 
 Run preprocessing from the repository root:
 
@@ -80,7 +84,15 @@ pixi install
 
 ### 2. Configure the source
 
-Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the file. Use `"npy"` for prepared files, `"raw-eager"` to read and transform all selected TIFF data at startup, or `"raw-virtual"` to expose plane-chunked Dask data to napari.
+Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the file:
+
+| Mode | Image loading | ROI loading | Persistent output |
+| ---- | ------------- | ----------- | ----------------- |
+| `npy` | Opens `volumes.npy` with read-only memory mapping | The plugin opens the existing ROI NPY | None |
+| `raw-eager` | Reads and transforms every selected TIFF plane at startup | Reads and transforms ROI data in memory | None |
+| `raw-virtual` | Builds a plane-chunked Dask array and reads TIFF data on demand | Reads and transforms ROI data in memory | None |
+
+The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.3.0 accepts an ROI path rather than an in-memory array.
 
 ### 3. Start the application
 
@@ -120,13 +132,29 @@ IMAGE_CONTRAST_LIMITS = (102, 400)
 | `LAYER_SCALE_TZYX`      | napari layer scale in `(t, z, y, x)` order                                   |
 | `IMAGE_CONTRAST_LIMITS` | Initial Image display contrast range                                         |
 
+Raw modes also use the acquisition and geometry settings beside these paths:
+
+| Setting | Meaning |
+| ------- | ------- |
+| `FRAMES_PER_VOLUME` | Number of acquired TIFF frames in each source volume |
+| `Z_START_FRAME`, `Z_END_FRAME` | Inclusive frame offsets retained from each volume |
+| `REVERSE_Z_BY_VOLUME_PARITY` | Whether to reverse Z for even and odd source-volume numbers |
+| `DYNAMICS_FIRST_VOLUME` | Base for fallback volume numbering when `dynamics.h5` group names are nonnumeric |
+| `ALIGN_XY`, `GOAL_ANGLE_DEGREES` | Apply the shared image/ROI XY alignment and target angle |
+| `FLIP_X`, `FLIP_Y` | Mirror images and ROI coordinates on the selected axes |
+| `IMAGE_INTERPOLATION_ORDER` | SciPy interpolation order: `0`, `1`, or `3` |
+| `COORDINATE_ORDER` | Input order of the first three ROI columns, such as `xyz` |
+| `XY_PIXEL_SIZE`, `Z_STEP_SIZE` | Define `Z_SCALE_RATIO = Z_STEP_SIZE / XY_PIXEL_SIZE` |
+
 `IMAGE_CONTRAST_LIMITS` affects visualization only. The contrast limits can be adjusted later in the Image layer controls. Gamma is a separate display parameter.
 
 ![Image Contrast](assets/image_contrast.png)
 
 `Z_DIVISOR` and the Z component of `LAYER_SCALE_TZYX` serve different purposes. The former converts ROI coordinates to array indices; the latter defines napari world coordinates. Do not apply the layer Z scale to the ROI coordinates a second time.
 
-In both raw modes, `Z_DIVISOR` must equal `Z_SCALE_RATIO`. `raw-virtual` keeps TIFF planes as `(1,1,Y,X)` Dask chunks and reads them when requested. The plugin's initial Z-profile refresh still reads every Z plane at the first time point; later time points remain virtual until viewed. Raw ROI data is small and is transformed eagerly, written to a session-only temporary NPY for the plugin's path-based loader, and removed after the napari session closes.
+In both raw modes, `Z_DIVISOR` must equal `Z_SCALE_RATIO`. A TIFF directory must contain numerically named `.tif` or `.tiff` frames; a TIFF file is read as a multi-page stack. `raw-virtual` reads one plane to determine the image shape, then keeps the Image in `(1,1,Y,X)` Dask chunks. The plugin's initial Z-profile refresh reads every Z plane at the first time point, while later time points remain virtual until viewed.
+
+Raw ROI data is transformed eagerly and written to a temporary NPY for the plugin's path-based loader. The launcher keeps this file for the napari session, calls `unload_roi()` when the viewer closes, and then removes the temporary directory. This avoids deleting a file while the plugin still holds a read-only memory map.
 
 ## What happens at startup
 
@@ -142,7 +170,7 @@ In `npy` mode, the launcher:
 8. Loads the ROI file.
 9. Checks, activates, and locates the first valid neuron.
 
-In either raw mode, the launcher instead prepares Image and ROI arrays directly from `TIFF_PATH` and `DYNAMICS_PATH`. `raw-eager` returns a NumPy Image array; `raw-virtual` returns a Dask Image array. Both modes apply the same geometry code used by NPY export.
+In either raw mode, the launcher prepares Image and ROI arrays from `TIFF_PATH` and `DYNAMICS_PATH` without writing `volumes.npy` or a persistent ROI file. `raw-eager` returns a NumPy Image array; `raw-virtual` returns a Dask Image array. Both modes use the same geometry code as NPY export.
 
 ## Basic usage
 
@@ -199,14 +227,14 @@ When loaded, a dense or opaque Labels display may obscure the underlying image o
 
 ## Alternative installation with pip
 
-Pixi is recommended for reproducible use. The launcher currently pins a plugin commit that contains the Image + ROI workflow. If Pixi is not available, create a Python 3.11–3.14 environment and install the same plugin revision with napari and a Qt backend:
+Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.3.0 with napari and a Qt backend:
 
 ```bash
-pip install "napari-worm-neuron-annotator[all] @ git+https://github.com/Wenlab/napari-worm-neuron-annotator.git@e0d3675437e434792ac51157820d316de2ff59f1"
+pip install "napari-worm-neuron-annotator[all]==0.3.0"
 python script/launch_datasets.py
 ```
 
-Install the preprocessing dependencies separately when running the TIFF and dynamics converter without Pixi:
+Install the raw-data dependencies before running the TIFF/dynamics converter or either raw launcher mode without Pixi:
 
 ```bash
 pip install "dask[array]" h5py scipy tifffile
@@ -216,7 +244,7 @@ python preprocess/export_dataset_to_npy.py
 If the Python environment already contains a working napari and Qt installation:
 
 ```bash
-pip install "napari-worm-neuron-annotator @ git+https://github.com/Wenlab/napari-worm-neuron-annotator.git@e0d3675437e434792ac51157820d316de2ff59f1"
+pip install "napari-worm-neuron-annotator==0.3.0"
 python script/launch_datasets.py
 ```
 
