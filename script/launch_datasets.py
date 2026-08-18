@@ -32,14 +32,17 @@ IMAGE_PATH = DATA_DIR / "volumes.npy"
 ROI_PATH = DATA_DIR / "neuron_point_tuple.npy"
 
 # ---------------------------------------------------------------------------
-# Raw TIFF + dynamics source
+# Raw TIFF + ROI source
 # ---------------------------------------------------------------------------
 
 TIFF_PATH = Path(
     r"\\192.168.1.192\Ikrma-2\20260304\W3IMMOB_2026-03-05_01-27-19"
     r"\0_Camera-Red_VSC-10629"
 )
-DYNAMICS_PATH = Path(
+# Choose "dynamics" for one dynamics.h5 file or "realtime-results" for a
+# directory containing volume_XXXXXXXX.h5 files.
+RAW_ROI_SOURCE_MODE = "dynamics"
+RAW_ROI_SOURCE_PATH = Path(
     r"Z:\data5\CBMI_inferred_results\Ikrma\proxy"
     r"\20260304_w3_immobile\dynamics.h5"
 )
@@ -101,7 +104,8 @@ def _raw_config():
         )
     return RawDatasetConfig(
         tiff_path=TIFF_PATH,
-        dynamics_path=DYNAMICS_PATH,
+        roi_source_mode=RAW_ROI_SOURCE_MODE,
+        roi_source_path=RAW_ROI_SOURCE_PATH,
         selected_volumes=tuple(SELECTED_VOLUMES),
         frames_per_volume=FRAMES_PER_VOLUME,
         z_start_frame=Z_START_FRAME,

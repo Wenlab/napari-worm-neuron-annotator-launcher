@@ -17,7 +17,7 @@ from geometry import (
     transform_points_xy,
     transform_points_z_scaled,
 )
-from roi_source import coordinates_xyz, load_roi_data
+from roi_source import RoiSourceMode, coordinates_xyz, load_roi_data
 from tiff_source import TiffFrameSource, read_volume, volume_frame_numbers
 
 LoadMode = Literal["eager", "virtual"]
@@ -28,7 +28,8 @@ class RawDatasetConfig:
     """Configuration shared by eager and virtual raw-data loading."""
 
     tiff_path: Path
-    dynamics_path: Path
+    roi_source_mode: RoiSourceMode
+    roi_source_path: Path
     selected_volumes: tuple[int, ...]
     frames_per_volume: int
     z_start_frame: int
@@ -57,9 +58,20 @@ def validate_raw_settings(config: RawDatasetConfig) -> None:
 
     if not config.tiff_path.exists():
         raise FileNotFoundError(f"TIFF source does not exist: {config.tiff_path}")
-    if not config.dynamics_path.is_file():
-        raise FileNotFoundError(
-            f"Dynamics source does not exist: {config.dynamics_path}"
+    if config.roi_source_mode == "dynamics":
+        if not config.roi_source_path.is_file():
+            raise FileNotFoundError(
+                f"Dynamics source does not exist: {config.roi_source_path}"
+            )
+    elif config.roi_source_mode == "realtime-results":
+        if not config.roi_source_path.is_dir():
+            raise FileNotFoundError(
+                f"Realtime results directory does not exist: "
+                f"{config.roi_source_path}"
+            )
+    else:
+        raise ValueError(
+            "ROI source mode must be 'dynamics' or 'realtime-results'"
         )
     if not config.selected_volumes:
         raise ValueError("SELECTED_VOLUMES must not be empty")
@@ -85,6 +97,8 @@ def validate_raw_settings(config: RawDatasetConfig) -> None:
     order = config.coordinate_order.lower()
     if len(order) != 3 or set(order) != set("xyz"):
         raise ValueError("COORDINATE_ORDER must be a permutation of 'xyz'")
+    if config.roi_source_mode == "realtime-results" and order != "xyz":
+        raise ValueError("Realtime ROI coordinates have fixed COORDINATE_ORDER='xyz'")
     if config.image_interpolation_order not in (0, 1, 3):
         raise ValueError("IMAGE_INTERPOLATION_ORDER must be 0, 1, or 3")
     if not np.isfinite(config.z_scale_ratio) or config.z_scale_ratio <= 0:
@@ -218,12 +232,12 @@ def _transform_rois(
     config: RawDatasetConfig,
     selected: Sequence[int],
     neuron_pt_tuple: np.ndarray,
-    dynamics_volume_numbers: Sequence[int],
+    roi_volume_numbers: Sequence[int],
     alignment_by_volume: dict[int, tuple[np.ndarray, np.ndarray]],
     image_shape_yx: tuple[int, int],
 ) -> np.ndarray:
     volume_to_index = {
-        int(volume): index for index, volume in enumerate(dynamics_volume_numbers)
+        int(volume): index for index, volume in enumerate(roi_volume_numbers)
     }
     transformed_frames: list[np.ndarray] = []
 
@@ -264,21 +278,27 @@ def load_raw_dataset(
         raise ValueError("Raw load mode must be 'eager' or 'virtual'")
 
     selected = [int(volume) for volume in config.selected_volumes]
-    (
-        neuron_pt_tuple,
-        dynamics_volume_numbers,
-        centers_xy,
-        rotations_xy,
-    ) = load_roi_data(config.dynamics_path, config.dynamics_first_volume)
+    roi_data = load_roi_data(
+        config.roi_source_path,
+        config.roi_source_mode,
+        selected,
+        first_volume=config.dynamics_first_volume,
+        align_xy=config.align_xy,
+    )
     alignment_by_volume = build_alignment_map(
-        dynamics_volume_numbers,
-        centers_xy,
-        rotations_xy,
+        roi_data.source_volumes,
+        roi_data.centers_xy,
+        roi_data.rotations_xy,
         config.goal_angle_degrees,
     )
-    missing = [volume for volume in selected if volume not in alignment_by_volume]
-    if missing:
-        raise KeyError(f"Volumes missing from dynamics.h5: {missing}")
+    print(
+        f"ROI source:       {config.roi_source_mode}  "
+        f"selected={len(selected)}  "
+        f"valid={len(selected) - len(roi_data.missing_volumes)}  "
+        f"missing={len(roi_data.missing_volumes)}  "
+        f"alignment_interpolated="
+        f"{len(roi_data.interpolated_alignment_volumes)}"
+    )
 
     if mode == "eager":
         volumes = _load_eager_volumes(config, selected, alignment_by_volume)
@@ -288,8 +308,8 @@ def load_raw_dataset(
     roi = _transform_rois(
         config,
         selected,
-        neuron_pt_tuple,
-        dynamics_volume_numbers,
+        roi_data.points,
+        roi_data.source_volumes,
         alignment_by_volume,
         image_shape_yx,
     )

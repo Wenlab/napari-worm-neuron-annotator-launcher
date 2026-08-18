@@ -97,12 +97,13 @@ def _save_outputs(
 
 
 def export_dataset(config: ExportConfig) -> None:
-    """Convert one configured TIFF/dynamics source into launcher inputs."""
+    """Convert one configured TIFF and ROI source into launcher inputs."""
 
     selected = [int(volume) for volume in config.source.selected_volumes]
     print(f"Source volumes: {selected}")
     print(f"TIFF path:      {config.source.tiff_path}")
-    print(f"Dynamics path:  {config.source.dynamics_path}")
+    print(f"ROI mode:       {config.source.roi_source_mode}")
+    print(f"ROI path:       {config.source.roi_source_path}")
     print(f"Output folder:  {config.output_dir}")
 
     dataset = load_raw_dataset(config.source, mode="eager")

@@ -17,6 +17,92 @@ def image_xy_rotation_matrix(angle_degrees: float) -> np.ndarray:
     return np.asarray([[cosine, sine], [-sine, cosine]], dtype=np.float32)
 
 
+def estimate_pca_alignment_xy(
+    points_xy: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return median XY center and the first PCA axis for finite points."""
+
+    points = np.asarray(points_xy, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError(f"XY points must have shape (N,2), got {points.shape}")
+    finite_points = points[np.isfinite(points).all(axis=1)]
+    if finite_points.shape[0] < 2:
+        return None
+
+    center = np.median(finite_points, axis=0)
+    centered = finite_points - center
+    _, singular_values, right_vectors = np.linalg.svd(
+        centered, full_matrices=False
+    )
+    if singular_values.size == 0 or singular_values[0] <= np.finfo(np.float32).eps:
+        return None
+    principal_axis = right_vectors[0]
+    return center.astype(np.float32), principal_axis.astype(np.float32)
+
+
+def pca_axis_rotation_matrix(principal_axis: np.ndarray) -> np.ndarray:
+    """Return the row-vector rotation that maps a PCA axis to positive Y."""
+
+    axis = np.asarray(principal_axis, dtype=np.float64)
+    if axis.shape != (2,) or not np.isfinite(axis).all():
+        raise ValueError(f"Principal axis must be finite with shape (2,), got {axis}")
+    norm = float(np.linalg.norm(axis))
+    if norm <= np.finfo(np.float32).eps:
+        raise ValueError("Principal axis must have non-zero length")
+    x_component, y_component = axis / norm
+    return np.asarray(
+        [[y_component, x_component], [-x_component, y_component]],
+        dtype=np.float32,
+    )
+
+
+def interpolate_alignment_xy(
+    target_volumes: Sequence[int],
+    sample_volumes: Sequence[int],
+    sample_centers_xy: np.ndarray,
+    sample_rotations_xy: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Interpolate centers and continuous rotation angles at target volumes."""
+
+    targets = np.asarray(target_volumes, dtype=np.float64)
+    samples = np.asarray(sample_volumes, dtype=np.float64)
+    centers = np.asarray(sample_centers_xy, dtype=np.float64)
+    rotations = np.asarray(sample_rotations_xy, dtype=np.float64)
+    if samples.ndim != 1 or samples.size == 0:
+        raise ValueError("At least one alignment sample is required")
+    if centers.shape != (samples.size, 2):
+        raise ValueError(
+            f"Alignment centers must have shape ({samples.size},2), "
+            f"got {centers.shape}"
+        )
+    if rotations.shape != (samples.size, 2, 2):
+        raise ValueError(
+            f"Alignment rotations must have shape ({samples.size},2,2), "
+            f"got {rotations.shape}"
+        )
+    if np.any(np.diff(samples) <= 0):
+        raise ValueError("Alignment sample volumes must be strictly increasing")
+
+    interpolated_centers = np.column_stack(
+        [np.interp(targets, samples, centers[:, axis]) for axis in range(2)]
+    )
+    sample_angles = np.unwrap(
+        np.arctan2(rotations[:, 0, 1], rotations[:, 0, 0])
+    )
+    target_angles = np.interp(targets, samples, sample_angles)
+    interpolated_rotations = np.stack(
+        [
+            image_xy_rotation_matrix(np.rad2deg(angle))
+            for angle in target_angles
+        ],
+        axis=0,
+    )
+    return (
+        interpolated_centers.astype(np.float32),
+        interpolated_rotations.astype(np.float32),
+    )
+
+
 def output_center_xy(image_shape_yx: Sequence[int]) -> np.ndarray:
     """Return the XY center used by image and point transforms."""
 
@@ -132,7 +218,7 @@ def align_volume_xy(
 
 
 def build_alignment_map(
-    dynamics_volume_numbers: Sequence[int],
+    source_volume_numbers: Sequence[int],
     centers_xy: np.ndarray,
     rotations_xy: np.ndarray,
     goal_angle_degrees: float,
@@ -142,5 +228,5 @@ def build_alignment_map(
     goal_rotation = image_xy_rotation_matrix(goal_angle_degrees)
     return {
         int(volume): (centers_xy[index], rotations_xy[index] @ goal_rotation)
-        for index, volume in enumerate(dynamics_volume_numbers)
+        for index, volume in enumerate(source_volume_numbers)
     }

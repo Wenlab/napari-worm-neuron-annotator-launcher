@@ -11,7 +11,7 @@ The launcher script `launch_datasets.py` creates and docks the plugin automatica
 ## Prerequisites
 
 - [Pixi](https://pixi.sh/latest/installation/). Pixi installs the locked Python, napari, Qt, plugin, TIFF, HDF5, and Dask dependencies.
-- One data source: either a prepared NPY dataset or the original TIFF data plus its `dynamics.h5` file. The Labels file is optional in both cases.
+- One data source: either a prepared NPY dataset or the original TIFF data plus one ROI source. The ROI source can be a `dynamics.h5` file or a realtime-results directory containing `volume_XXXXXXXX.h5` files. The Labels file is optional in both cases.
 
 A prepared dataset has this layout:
 
@@ -30,13 +30,14 @@ dataset/
 
 ## Export a prepared dataset
 
-The preprocessing entry point at `preprocess/export_dataset_to_npy.py` converts selected TIFF volumes and their `dynamics.h5` ROI point clouds into the NPY files consumed by the launcher. TIFF reading, ROI loading, shared geometry, and export orchestration are kept in focused modules in the same directory; users only need to configure and run the entry point.
+The preprocessing entry point at `preprocess/export_dataset_to_npy.py` converts selected TIFF volumes and their ROI point clouds into the NPY files consumed by the launcher. TIFF reading, ROI loading, shared geometry, and export orchestration are kept in focused modules in the same directory; users only need to configure and run the entry point.
 
 Edit these settings near the top of the script:
 
 ```python
 TIFF_PATH = Path(r"/path/to/tiff/source")
-DYNAMICS_PATH = Path(r"/path/to/dynamics.h5")
+ROI_SOURCE_MODE = "dynamics"
+ROI_SOURCE_PATH = Path(r"/path/to/dynamics.h5")
 OUTPUT_DIR = Path(r"/path/to/output/dataset")
 SELECTED_VOLUMES = [346, 361, 396]
 SAVE_MASK = False
@@ -50,6 +51,18 @@ GOAL_ANGLE_DEGREES = -90.0
 FLIP_X = False
 FLIP_Y = False
 ```
+
+Use `ROI_SOURCE_MODE = "realtime-results"` and point `ROI_SOURCE_PATH` to a directory with this layout to load per-volume realtime results:
+
+```text
+realtime-results/
+├── volume_00000000.h5
+├── volume_00000005.h5
+├── volume_00000008.h5
+└── ...
+```
+
+The reader uses `neuron_pred_ids` as the output neuron axis: ROI row `i` represents realtime neuron ID `i`. Missing files, groups, or point datasets produce an all-NaN ROI frame without changing the requested time axis. Missing neurons inside an otherwise valid volume retain NaN rows. Realtime point tuples have fixed `xyz` coordinate order and retain all source columns, including scaled Z center and depth.
 
 The script keeps the complete XY canvas; it does not crop images or point coordinates. ROI Z coordinates are shifted and, when configured, reversed together with the selected TIFF slice range. It writes the following files into `OUTPUT_DIR`:
 
@@ -112,7 +125,8 @@ DATA_DIR = Path("/path/to/dataset")
 
 # Used by raw-eager and raw-virtual modes.
 TIFF_PATH = Path("/path/to/tiff/source")
-DYNAMICS_PATH = Path("/path/to/dynamics.h5")
+RAW_ROI_SOURCE_MODE = "dynamics"
+RAW_ROI_SOURCE_PATH = Path("/path/to/dynamics.h5")
 SELECTED_VOLUMES = [346, 361, 396]
 
 LABELS_PATH = None
@@ -126,7 +140,8 @@ IMAGE_CONTRAST_LIMITS = (102, 400)
 | `SOURCE_MODE`           | `npy`, `raw-eager`, or `raw-virtual`                                          |
 | `DATA_DIR`              | Directory containing the required NPY files in `npy` mode                     |
 | `TIFF_PATH`             | Numbered TIFF directory or multi-page stack used by both raw modes            |
-| `DYNAMICS_PATH`         | ROI and alignment HDF5 used by both raw modes                                 |
+| `RAW_ROI_SOURCE_MODE`   | `dynamics` or `realtime-results`                                               |
+| `RAW_ROI_SOURCE_PATH`   | A dynamics HDF5 file or realtime-results directory used by both raw modes      |
 | `LABELS_PATH`           | Optional Labels path; use `None` when no overlay is needed                     |
 | `Z_DIVISOR`             | Converts scaled ROI Z coordinates and depths to image indices                 |
 | `LAYER_SCALE_TZYX`      | napari layer scale in `(t, z, y, x)` order                                   |
@@ -139,11 +154,11 @@ Raw modes also use the acquisition and geometry settings beside these paths:
 | `FRAMES_PER_VOLUME` | Number of acquired TIFF frames in each source volume |
 | `Z_START_FRAME`, `Z_END_FRAME` | Inclusive frame offsets retained from each volume |
 | `REVERSE_Z_BY_VOLUME_PARITY` | Whether to reverse Z for even and odd source-volume numbers |
-| `DYNAMICS_FIRST_VOLUME` | Base for fallback volume numbering when `dynamics.h5` group names are nonnumeric |
+| `DYNAMICS_FIRST_VOLUME` | Base for fallback volume numbering when `dynamics.h5` group names are nonnumeric; ignored for realtime results |
 | `ALIGN_XY`, `GOAL_ANGLE_DEGREES` | Apply the shared image/ROI XY alignment and target angle |
 | `FLIP_X`, `FLIP_Y` | Mirror images and ROI coordinates on the selected axes |
 | `IMAGE_INTERPOLATION_ORDER` | SciPy interpolation order: `0`, `1`, or `3` |
-| `COORDINATE_ORDER` | Input order of the first three ROI columns, such as `xyz` |
+| `COORDINATE_ORDER` | Input order of the first three dynamics ROI columns; realtime results require `xyz` |
 | `XY_PIXEL_SIZE`, `Z_STEP_SIZE` | Define `Z_SCALE_RATIO = Z_STEP_SIZE / XY_PIXEL_SIZE` |
 
 `IMAGE_CONTRAST_LIMITS` affects visualization only. The contrast limits can be adjusted later in the Image layer controls. Gamma is a separate display parameter.
@@ -151,6 +166,10 @@ Raw modes also use the acquisition and geometry settings beside these paths:
 ![Image Contrast](assets/image_contrast.png)
 
 `Z_DIVISOR` and the Z component of `LAYER_SCALE_TZYX` serve different purposes. The former converts ROI coordinates to array indices; the latter defines napari world coordinates. Do not apply the layer Z scale to the ROI coordinates a second time.
+
+With `ALIGN_XY = True`, dynamics mode reads each volume's source-space center and rotation. Realtime mode estimates them from all finite neuron XY coordinates: it subtracts the median center, uses the first PCA direction, and keeps that direction continuous over source-volume order. This per-volume rotation first aligns the changing worm posture to positive Y; `GOAL_ANGLE_DEGREES` then applies one shared target orientation. They are therefore complementary rather than duplicate rotations. With `ALIGN_XY = False`, both PCA alignment and the goal angle are skipped, matching the existing raw-coordinate behavior.
+
+If a realtime volume lacks enough point data for PCA, its ROI remains NaN while its Image alignment uses linearly interpolated center and unwrapped rotation angle from neighboring valid results. Missing leading or trailing volumes use the nearest valid transform. The interpolation rebuilds an orthonormal rotation matrix instead of interpolating matrix elements.
 
 In both raw modes, `Z_DIVISOR` must equal `Z_SCALE_RATIO`. A TIFF directory must contain numerically named `.tif` or `.tiff` frames; a TIFF file is read as a multi-page stack. `raw-virtual` reads one plane to determine the image shape, then keeps the Image in `(1,1,Y,X)` Dask chunks. The plugin's initial Z-profile refresh reads every Z plane at the first time point, while later time points remain virtual until viewed.
 
@@ -170,7 +189,7 @@ In `npy` mode, the launcher:
 8. Loads the ROI file.
 9. Checks, activates, and locates the first valid neuron.
 
-In either raw mode, the launcher prepares Image and ROI arrays from `TIFF_PATH` and `DYNAMICS_PATH` without writing `volumes.npy` or a persistent ROI file. `raw-eager` returns a NumPy Image array; `raw-virtual` returns a Dask Image array. Both modes use the same geometry code as NPY export.
+In either raw mode, the launcher prepares Image and ROI arrays from `TIFF_PATH` and the configured raw ROI source without writing `volumes.npy` or a persistent ROI file. `raw-eager` returns a NumPy Image array; `raw-virtual` returns a Dask Image array. Both modes use the same geometry code as NPY export.
 
 ## Basic usage
 
@@ -234,7 +253,7 @@ pip install "napari-worm-neuron-annotator[all]==0.3.0"
 python script/launch_datasets.py
 ```
 
-Install the raw-data dependencies before running the TIFF/dynamics converter or either raw launcher mode without Pixi:
+Install the raw-data dependencies before running the TIFF/ROI converter or either raw launcher mode without Pixi:
 
 ```bash
 pip install "dask[array]" h5py scipy tifffile

@@ -20,7 +20,10 @@ TIFF_PATH = Path(
     r"\\192.168.1.192\Ikrma-2\20260304\W3IMMOB_2026-03-05_01-27-19"
     r"\0_Camera-Red_VSC-10629"
 )
-DYNAMICS_PATH = Path(
+# Choose "dynamics" for one dynamics.h5 file or "realtime-results" for a
+# directory containing volume_XXXXXXXX.h5 files.
+ROI_SOURCE_MODE = "dynamics"
+ROI_SOURCE_PATH = Path(
     r"Z:\data5\CBMI_inferred_results\Ikrma\proxy"
     r"\20260304_w3_immobile\dynamics.h5"
 )
@@ -43,7 +46,7 @@ Z_START_FRAME = 0
 Z_END_FRAME = 17
 REVERSE_Z_BY_VOLUME_PARITY = (False, False)
 
-# dynamics.h5 reading.
+# dynamics.h5 reading; ignored in realtime-results mode.
 DYNAMICS_FIRST_VOLUME = 0
 
 # XY alignment and flips, applied identically to images and points.
@@ -53,12 +56,12 @@ FLIP_X = False
 FLIP_Y = False
 IMAGE_INTERPOLATION_ORDER = 1
 
-# Coordinate order of the first three columns in dynamics.h5. Output ROI files
-# always store canonical x, y, z in columns 0, 1, 2.
+# Coordinate order of the first three columns in dynamics.h5. Realtime results
+# always use "xyz". Output ROI files store canonical x, y, z in columns 0, 1, 2.
 COORDINATE_ORDER = "xyz"
 
-# Z in dynamics.h5 is stored in XY-pixel units. The launcher divides z and
-# depth by this same ratio to recover image-slice coordinates.
+# Source Z and depth are stored in XY-pixel units. The launcher divides them by
+# this same ratio to recover image-slice coordinates.
 XY_PIXEL_SIZE = 0.3
 Z_STEP_SIZE = 1.5
 Z_SCALE_RATIO = Z_STEP_SIZE / XY_PIXEL_SIZE
@@ -69,7 +72,8 @@ def main() -> None:
 
     source = RawDatasetConfig(
         tiff_path=TIFF_PATH,
-        dynamics_path=DYNAMICS_PATH,
+        roi_source_mode=ROI_SOURCE_MODE,
+        roi_source_path=ROI_SOURCE_PATH,
         selected_volumes=tuple(SELECTED_VOLUMES),
         frames_per_volume=FRAMES_PER_VOLUME,
         z_start_frame=Z_START_FRAME,
