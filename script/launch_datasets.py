@@ -212,14 +212,6 @@ def main() -> None:
         widget.z_divisor_spin.setValue(Z_DIVISOR)
         widget.load_roi_path(roi_path)
 
-        if temporary_dir is not None:
-            def release_session_roi(event=None) -> None:
-                del event
-                if widget.roi_dataset is not None:
-                    widget.unload_roi()
-
-            viewer.events.close.connect(release_session_roi)
-
         if widget.active_id is not None:
             widget.activate_id(widget.active_id, locate=True)
 

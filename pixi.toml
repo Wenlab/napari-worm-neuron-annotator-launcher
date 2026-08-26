@@ -17,7 +17,7 @@ tifffile = ">=2024.6"
 dask-core = ">=2024.6"
 
 [pypi-dependencies]
-napari-worm-neuron-annotator = "==0.3.5"
+napari-worm-neuron-annotator = "==0.4.0"
 
 [tasks]
 start = "python script/launch_datasets.py"
