@@ -70,7 +70,9 @@ The script keeps the complete XY canvas; it does not crop images or point coordi
 - `neuron_point_tuple.npy`: required `(T,N,K)` float32 ROI array;
 - `neuron_mask.npy`: optional `(T,Z,Y,X)` int16 Labels array, generated only when `SAVE_MASK = True`.
 
-The exporter preserves the order of `SELECTED_VOLUMES`. When `SAVE_MASK = False`, it removes an existing `neuron_mask.npy` from `OUTPUT_DIR` so an old mask cannot be mistaken for current output.
+The exporter preserves the order of `SELECTED_VOLUMES` and streams one volume at a time into temporary memory-mapped NPY files. Image and optional Labels data are not retained for all time points in RAM; peak image memory is bounded approximately by the current volume and its transformation buffers. Completed temporary files are moved into `OUTPUT_DIR` only after the export succeeds. When `SAVE_MASK = False`, it removes an existing `neuron_mask.npy` from `OUTPUT_DIR` after a successful export so an old mask cannot be mistaken for current output.
+
+Streaming reduces RAM usage, but the resulting NPY still requires the corresponding disk space. For example, `(3315, 18, 1024, 1024)` float32 volumes require about 233 GiB on disk. Ensure that `OUTPUT_DIR` has enough free space and that the output is on a 64-bit system.
 
 Run preprocessing from the repository root:
 
@@ -105,7 +107,7 @@ Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the 
 | `raw-eager` | Reads and transforms every selected TIFF plane at startup | Reads and transforms ROI data in memory | None |
 | `raw-virtual` | Builds a plane-chunked Dask array and reads TIFF data on demand | Reads and transforms ROI data in memory | None |
 
-The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.3.0 accepts an ROI path rather than an in-memory array.
+The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.4.1 accepts an ROI path rather than an in-memory array.
 
 ### 3. Start the application
 
@@ -246,10 +248,10 @@ When loaded, a dense or opaque Labels display may obscure the underlying image o
 
 ## Alternative installation with pip
 
-Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.3.0 with napari and a Qt backend:
+Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.4.1 with napari and a Qt backend:
 
 ```bash
-pip install "napari-worm-neuron-annotator[all]==0.3.0"
+pip install "napari-worm-neuron-annotator[all]==0.4.1"
 python script/launch_datasets.py
 ```
 
@@ -263,7 +265,7 @@ python preprocess/export_dataset_to_npy.py
 If the Python environment already contains a working napari and Qt installation:
 
 ```bash
-pip install "napari-worm-neuron-annotator==0.3.0"
+pip install "napari-worm-neuron-annotator==0.4.1"
 python script/launch_datasets.py
 ```
 
