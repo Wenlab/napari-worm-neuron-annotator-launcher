@@ -109,13 +109,26 @@ def read_volume(
         reverse_z_by_volume_parity,
     )
 
-    frames = [source.read(frame_number) for frame_number in frame_numbers]
-    first_shape = frames[0].shape
-    if any(frame.shape != first_shape for frame in frames):
-        raise ValueError(
-            f"Inconsistent TIFF shapes within source volume {volume_number}"
-        )
-    return np.stack(frames, axis=0)
+    first_frame = source.read(frame_numbers[0])
+    volume = np.empty(
+        (len(frame_numbers), *first_frame.shape),
+        dtype=first_frame.dtype,
+    )
+    volume[0] = first_frame
+    for z_index, frame_number in enumerate(frame_numbers[1:], start=1):
+        frame = source.read(frame_number)
+        if frame.shape != first_frame.shape:
+            raise ValueError(
+                f"TIFF frame {frame_number} shape {frame.shape} does not match "
+                f"{first_frame.shape} within source volume {volume_number}"
+            )
+        if frame.dtype != first_frame.dtype:
+            raise TypeError(
+                f"TIFF frame {frame_number} dtype {frame.dtype} does not match "
+                f"{first_frame.dtype} within source volume {volume_number}"
+            )
+        volume[z_index] = frame
+    return volume
 
 
 def volume_frame_numbers(

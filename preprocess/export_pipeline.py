@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from raw_dataset_loader import RawDatasetConfig, load_raw_dataset
+from raw_dataset_loader import (
+    RawDatasetConfig,
+    iter_transformed_volumes,
+    prepare_raw_inputs,
+    _transform_rois,
+)
 
 
 @dataclass(frozen=True)
@@ -54,74 +61,209 @@ def _rasterize_roi_mask(
 
 
 def save_npy_atomic(path: Path, array: np.ndarray) -> None:
-    """Replace one NPY output only after its complete contents are written."""
+    """Replace a regular NPY output only after its contents are complete."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f".{path.name}.tmp")
     try:
         with temporary_path.open("wb") as output_file:
-            np.save(output_file, array)
+            np.save(output_file, array, allow_pickle=False)
         temporary_path.replace(path)
     finally:
         temporary_path.unlink(missing_ok=True)
 
 
-def _save_outputs(
-    output_dir: Path,
-    volumes: np.ndarray,
-    roi: np.ndarray,
-    masks: np.ndarray | None,
+def _write_volume(
+    image_output: np.memmap,
+    mask_output: np.memmap | None,
+    local_t: int,
+    source_volume: int,
+    expected_source_volume: int,
+    volume: np.ndarray,
+    roi_points: np.ndarray,
+    volume_shape: tuple[int, int, int],
+    z_scale_ratio: float,
 ) -> None:
-    image_path = output_dir / "volumes.npy"
-    roi_path = output_dir / "neuron_point_tuple.npy"
-    mask_path = output_dir / "neuron_mask.npy"
+    """Write one transformed Image volume and optional Labels volume."""
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    save_npy_atomic(image_path, volumes)
-    save_npy_atomic(roi_path, roi)
-    if masks is not None:
-        save_npy_atomic(mask_path, masks)
+    if source_volume != expected_source_volume:
+        raise ValueError(
+            f"Unexpected source volume {source_volume} at output index {local_t}; "
+            f"expected {expected_source_volume}"
+        )
+    if volume.shape != volume_shape:
+        raise ValueError(
+            f"Volume {source_volume} shape {volume.shape} does not match "
+            f"{volume_shape}"
+        )
+    image_output[local_t] = volume
+    if mask_output is not None:
+        mask_output[local_t] = _rasterize_roi_mask(
+            roi_points,
+            volume_shape,
+            z_scale_ratio,
+        )
+    # Flush each completed volume so dirty mapped pages do not accumulate
+    # across a long export on a local or SMB-backed output volume.
+    image_output.flush()
+    if mask_output is not None:
+        mask_output.flush()
+
+
+def _commit_staged_outputs(
+    staging_dir: Path,
+    output_dir: Path,
+    save_mask: bool,
+) -> None:
+    """Replace final outputs only after all staging files are complete."""
+
+    (staging_dir / "volumes.npy").replace(output_dir / "volumes.npy")
+    (staging_dir / "neuron_point_tuple.npy").replace(
+        output_dir / "neuron_point_tuple.npy"
+    )
+    mask_path = output_dir / "neuron_mask.npy"
+    if save_mask:
+        (staging_dir / "neuron_mask.npy").replace(mask_path)
     else:
         mask_path.unlink(missing_ok=True)
 
-    print(
-        f"\nSaved Image: {image_path}  shape={volumes.shape}  dtype={volumes.dtype}"
-    )
-    print(f"Saved ROI: {roi_path}  shape={roi.shape}  dtype={roi.dtype}")
-    if masks is not None:
-        print(
-            f"Saved optional Labels: {mask_path}  "
-            f"shape={masks.shape}  dtype={masks.dtype}"
-        )
-    print("Done.")
+
+def _close_memmap(array: np.memmap | None) -> None:
+    """Flush and close a NPY mapping, including on Windows."""
+
+    if array is None:
+        return
+    array.flush()
+    mapping = getattr(array, "_mmap", None)
+    if mapping is not None and not getattr(mapping, "closed", False):
+        mapping.close()
 
 
 def export_dataset(config: ExportConfig) -> None:
-    """Convert one configured TIFF and ROI source into launcher inputs."""
+    """Stream raw inputs into launcher-compatible NPY files."""
 
-    selected = [int(volume) for volume in config.source.selected_volumes]
+    selected, roi_data, alignment_by_volume = prepare_raw_inputs(config.source)
     print(f"Source volumes: {selected}")
     print(f"TIFF path:      {config.source.tiff_path}")
     print(f"ROI mode:       {config.source.roi_source_mode}")
     print(f"ROI path:       {config.source.roi_source_path}")
     print(f"Output folder:  {config.output_dir}")
 
-    dataset = load_raw_dataset(config.source, mode="eager")
-    if not isinstance(dataset.volumes, np.ndarray):
-        raise TypeError("NPY export requires an eager NumPy Image array")
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    iterator = iter_transformed_volumes(
+        config.source,
+        selected,
+        alignment_by_volume,
+    )
+    try:
+        with TemporaryDirectory(
+            prefix=".export-",
+            dir=config.output_dir,
+        ) as temporary_dir:
+            staging_dir = Path(temporary_dir)
+            try:
+                first_local_t, first_source_volume, first_volume = next(iterator)
+            except StopIteration as error:
+                raise RuntimeError("No source volumes were read") from error
 
-    masks = None
-    if config.save_mask:
-        volume_shape = tuple(int(size) for size in dataset.volumes.shape[1:])
-        masks = np.stack(
-            [
-                _rasterize_roi_mask(
-                    points,
+            volume_shape = tuple(int(size) for size in first_volume.shape)
+            image_shape_yx = volume_shape[1:]
+            roi = _transform_rois(
+                config.source,
+                selected,
+                roi_data.points,
+                roi_data.source_volumes,
+                alignment_by_volume,
+                image_shape_yx,
+            )
+            image_shape = (len(selected), *volume_shape)
+            image_size_gib = (
+                int(np.prod(image_shape, dtype=np.int64))
+                * np.dtype(np.float32).itemsize
+                / 1024**3
+            )
+            print(
+                f"Streaming Image: shape={image_shape}  dtype=float32  "
+                f"size={image_size_gib:.1f} GiB"
+            )
+
+            image_output: np.memmap | None = None
+            mask_output: np.memmap | None = None
+            try:
+                image_output = np.lib.format.open_memmap(
+                    staging_dir / "volumes.npy",
+                    mode="w+",
+                    dtype=np.float32,
+                    shape=image_shape,
+                )
+                if config.save_mask:
+                    mask_output = np.lib.format.open_memmap(
+                        staging_dir / "neuron_mask.npy",
+                        mode="w+",
+                        dtype=np.int16,
+                        shape=image_shape,
+                    )
+
+                _write_volume(
+                    image_output,
+                    mask_output,
+                    first_local_t,
+                    first_source_volume,
+                    selected[first_local_t],
+                    first_volume,
+                    roi[first_local_t],
                     volume_shape,
                     config.source.z_scale_ratio,
                 )
-                for points in dataset.roi
-            ],
-            axis=0,
-        )
-    _save_outputs(config.output_dir, dataset.volumes, dataset.roi, masks)
+                del first_volume
+
+                written_count = 1
+                for local_t, source_volume, volume in iterator:
+                    _write_volume(
+                        image_output,
+                        mask_output,
+                        local_t,
+                        source_volume,
+                        selected[local_t],
+                        volume,
+                        roi[local_t],
+                        volume_shape,
+                        config.source.z_scale_ratio,
+                    )
+                    written_count += 1
+                    del volume
+                if written_count != len(selected):
+                    raise RuntimeError(
+                        f"Wrote {written_count} volumes; expected {len(selected)}"
+                    )
+            finally:
+                _close_memmap(image_output)
+                _close_memmap(mask_output)
+                image_output = None
+                mask_output = None
+                gc.collect()
+
+            save_npy_atomic(staging_dir / "neuron_point_tuple.npy", roi)
+            _commit_staged_outputs(
+                staging_dir,
+                config.output_dir,
+                config.save_mask,
+            )
+
+            print(
+                f"\nSaved Image: {config.output_dir / 'volumes.npy'}  "
+                f"shape={image_shape}  dtype=float32"
+            )
+            print(
+                f"Saved ROI: {config.output_dir / 'neuron_point_tuple.npy'}  "
+                f"shape={roi.shape}  dtype={roi.dtype}"
+            )
+            if config.save_mask:
+                print(
+                    f"Saved optional Labels: "
+                    f"{config.output_dir / 'neuron_mask.npy'}  "
+                    f"shape={image_shape}  dtype=int16"
+                )
+            print("Done.")
+    finally:
+        iterator.close()

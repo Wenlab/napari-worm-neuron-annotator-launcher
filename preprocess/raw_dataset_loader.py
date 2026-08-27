@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,7 +17,7 @@ from geometry import (
     transform_points_xy,
     transform_points_z_scaled,
 )
-from roi_source import RoiSourceMode, coordinates_xyz, load_roi_data
+from roi_source import RoiData, RoiSourceMode, coordinates_xyz, load_roi_data
 from tiff_source import TiffFrameSource, read_volume, volume_frame_numbers
 
 LoadMode = Literal["eager", "virtual"]
@@ -51,6 +51,9 @@ class RawDataset:
 
     volumes: np.ndarray | da.Array
     roi: np.ndarray
+
+
+AlignmentMap = dict[int, tuple[np.ndarray, np.ndarray]]
 
 
 def validate_raw_settings(config: RawDatasetConfig) -> None:
@@ -150,11 +153,32 @@ def _read_transform_plane(
 def _load_eager_volumes(
     config: RawDatasetConfig,
     selected: Sequence[int],
-    alignment_by_volume: dict[int, tuple[np.ndarray, np.ndarray]],
+    alignment_by_volume: AlignmentMap,
 ) -> np.ndarray:
-    volumes_f32: list[np.ndarray] = []
-    reference_shape: tuple[int, int, int] | None = None
+    volumes_f32 = [
+        volume
+        for _, _, volume in iter_transformed_volumes(
+            config, selected, alignment_by_volume
+        )
+    ]
+    if not volumes_f32:
+        raise RuntimeError("No source volumes were read")
+    return np.stack(volumes_f32, axis=0)
 
+
+def iter_transformed_volumes(
+    config: RawDatasetConfig,
+    selected: Sequence[int],
+    alignment_by_volume: AlignmentMap,
+) -> Iterator[tuple[int, int, np.ndarray]]:
+    """Yield transformed volumes one at a time.
+
+    The iterator keeps only the current source volume in memory.  It is used
+    by the streaming exporter; the eager launcher path still collects all
+    yielded volumes before returning.
+    """
+
+    reference_shape: tuple[int, int, int] | None = None
     with TiffFrameSource(config.tiff_path) as source:
         for local_t, source_volume in enumerate(selected):
             volume = read_volume(
@@ -174,22 +198,19 @@ def _load_eager_volumes(
                 )
             center_xy, rotation_xy = alignment_by_volume[source_volume]
             volume = _transform_volume(volume, center_xy, rotation_xy, config)
-            volumes_f32.append(volume)
             print(
                 f"  [{local_t}] source_volume={source_volume}  "
                 f"shape={volume.shape}  dtype={volume.dtype}  "
                 f"min={volume.min():.1f}  max={volume.max():.1f}"
             )
-
-    if reference_shape is None:
-        raise RuntimeError("No source volumes were read")
-    return np.stack(volumes_f32, axis=0)
+            yield local_t, int(source_volume), volume
+            del volume
 
 
 def _load_virtual_volumes(
     config: RawDatasetConfig,
     selected: Sequence[int],
-    alignment_by_volume: dict[int, tuple[np.ndarray, np.ndarray]],
+    alignment_by_volume: AlignmentMap,
 ) -> da.Array:
     first_volume = selected[0]
     first_frame = volume_frame_numbers(
@@ -233,7 +254,7 @@ def _transform_rois(
     selected: Sequence[int],
     neuron_pt_tuple: np.ndarray,
     roi_volume_numbers: Sequence[int],
-    alignment_by_volume: dict[int, tuple[np.ndarray, np.ndarray]],
+    alignment_by_volume: AlignmentMap,
     image_shape_yx: tuple[int, int],
 ) -> np.ndarray:
     volume_to_index = {
@@ -267,16 +288,12 @@ def _transform_rois(
     return np.stack(transformed_frames, axis=0)
 
 
-def load_raw_dataset(
+def prepare_raw_inputs(
     config: RawDatasetConfig,
-    mode: LoadMode = "eager",
-) -> RawDataset:
-    """Prepare raw sources eagerly or as a plane-chunked virtual Image."""
+) -> tuple[list[int], RoiData, AlignmentMap]:
+    """Validate raw settings and load ROI/alignment data for selected volumes."""
 
     validate_raw_settings(config)
-    if mode not in ("eager", "virtual"):
-        raise ValueError("Raw load mode must be 'eager' or 'virtual'")
-
     selected = [int(volume) for volume in config.selected_volumes]
     roi_data = load_roi_data(
         config.roi_source_path,
@@ -299,6 +316,19 @@ def load_raw_dataset(
         f"alignment_interpolated="
         f"{len(roi_data.interpolated_alignment_volumes)}"
     )
+    return selected, roi_data, alignment_by_volume
+
+
+def load_raw_dataset(
+    config: RawDatasetConfig,
+    mode: LoadMode = "eager",
+) -> RawDataset:
+    """Prepare raw sources eagerly or as a plane-chunked virtual Image."""
+
+    if mode not in ("eager", "virtual"):
+        raise ValueError("Raw load mode must be 'eager' or 'virtual'")
+
+    selected, roi_data, alignment_by_volume = prepare_raw_inputs(config)
 
     if mode == "eager":
         volumes = _load_eager_volumes(config, selected, alignment_by_volume)
