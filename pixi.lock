@@ -305,7 +305,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zlib-ng-2.3.3-hceb46e0_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
-      - pypi: https://files.pythonhosted.org/packages/9a/27/c1ff05e5d07c56e651d84ca82d861fa7377002f49bf7f482af7199841a8b/napari_worm_neuron_annotator-0.4.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
       osx-64:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/_openmp_mutex-4.5-7_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
@@ -567,7 +567,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/zlib-ng-2.3.3-h8bce59a_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/zstd-1.5.7-h3eecb57_6.conda
-      - pypi: https://files.pythonhosted.org/packages/9a/27/c1ff05e5d07c56e651d84ca82d861fa7377002f49bf7f482af7199841a8b/napari_worm_neuron_annotator-0.4.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-7_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
@@ -829,7 +829,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-hed4e4f5_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-      - pypi: https://files.pythonhosted.org/packages/9a/27/c1ff05e5d07c56e651d84ca82d861fa7377002f49bf7f482af7199841a8b/napari_worm_neuron_annotator-0.4.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
       win-64:
       - conda: https://conda.anaconda.org/conda-forge/win-64/_libavif_api-1.4.2-h11686cb_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/_openmp_mutex-4.5-20_gnu.conda
@@ -1088,7 +1088,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/zlib-1.3.2-hfd05255_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zlib-ng-2.3.3-h0261ad2_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zstd-1.5.7-h534d264_6.conda
-      - pypi: https://files.pythonhosted.org/packages/9a/27/c1ff05e5d07c56e651d84ca82d861fa7377002f49bf7f482af7199841a8b/napari_worm_neuron_annotator-0.4.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
 packages:
 - conda: https://conda.anaconda.org/conda-forge/win-64/_libavif_api-1.4.2-h11686cb_3.conda
   sha256: 699636321392c880feaa54162b15edd786927bf614396c571eae6d43b3b3415b
@@ -6967,10 +6967,10 @@ packages:
   - pkg:pypi/napari-svg?source=hash-mapping
   size: 19988
   timestamp: 1736862579398
-- pypi: https://files.pythonhosted.org/packages/9a/27/c1ff05e5d07c56e651d84ca82d861fa7377002f49bf7f482af7199841a8b/napari_worm_neuron_annotator-0.4.1-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
   name: napari-worm-neuron-annotator
-  version: 0.4.1
-  sha256: 9783d2834b4055ba663d11f8e6970d29eb3c7a364cd0a20a217fcdfb87a879a7
+  version: 0.4.2
+  sha256: 738ce8ccb769a83abc1624c26bee850c066273f4d8d4d34636858545404edb91
   requires_dist:
   - napari>=0.8,<0.9
   - numpy

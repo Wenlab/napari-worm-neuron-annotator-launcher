@@ -107,7 +107,7 @@ Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the 
 | `raw-eager` | Reads and transforms every selected TIFF plane at startup | Reads and transforms ROI data in memory | None |
 | `raw-virtual` | Builds a plane-chunked Dask array and reads TIFF data on demand | Reads and transforms ROI data in memory | None |
 
-The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.4.1 accepts an ROI path rather than an in-memory array.
+The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.4.2 accepts an ROI path rather than an in-memory array.
 
 ### 3. Start the application
 
@@ -248,10 +248,10 @@ When loaded, a dense or opaque Labels display may obscure the underlying image o
 
 ## Alternative installation with pip
 
-Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.4.1 with napari and a Qt backend:
+Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.4.2 with napari and a Qt backend:
 
 ```bash
-pip install "napari-worm-neuron-annotator[all]==0.4.1"
+pip install "napari-worm-neuron-annotator[all]==0.4.2"
 python script/launch_datasets.py
 ```
 
@@ -265,7 +265,7 @@ python preprocess/export_dataset_to_npy.py
 If the Python environment already contains a working napari and Qt installation:
 
 ```bash
-pip install "napari-worm-neuron-annotator==0.4.1"
+pip install "napari-worm-neuron-annotator==0.4.2"
 python script/launch_datasets.py
 ```
 
