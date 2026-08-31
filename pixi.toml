@@ -22,3 +22,4 @@ napari-worm-neuron-annotator = "==0.4.2"
 [tasks]
 start = "python script/launch_datasets.py"
 preprocess = "python preprocess/export_dataset_to_npy.py"
+proofread-stats = "python script/analyze_proofreading.py"

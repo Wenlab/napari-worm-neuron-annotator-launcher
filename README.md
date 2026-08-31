@@ -246,6 +246,44 @@ LABELS_PATH = DATA_DIR / "neuron_mask.npy"
 
 When loaded, a dense or opaque Labels display may obscure the underlying image or the Vectors ROI boxes. Hide the Labels layer with the eye icon in napari's layer list, or set both checked and unchecked label opacity to `0`. These operations affect display only and do not modify `neuron_mask.npy`.
 
+## Proofreading accuracy statistics
+
+`script/analyze_proofreading.py` summarizes the sparse JSON sidecars produced
+by proofreading. Edit `PROOFREADING_INPUTS`, `PROOFREADING_SCOPE`,
+`PARTIAL_NEURON_IDS`, `OUTPUT_DIR`, and the optional half-open
+`VOLUME_RANGE = (start, stop)` near the top of that script, then run:
+
+```bash
+pixi run proofread-stats
+```
+
+For each sidecar, the script writes `summary.json`, `per_neuron.csv`,
+`per_volume.csv`, and `modified_observations.csv`. A move is an observation
+whose final `center_zyx` differs from its raw ROI center. Global resize is
+reported at neuron level and is identified from the plugin's `placement_size`
+metadata plus at least one effective `size_zyx` difference.
+
+The default `PROOFREADING_SCOPE = "partial"` reports only raw neuron IDs found
+in the sidecar and does not publish whole-dataset accuracy or neuron-fraction
+metrics. Set `PARTIAL_NEURON_IDS` when proofreading included unchanged IDs,
+because unchanged IDs leave no record in a sparse sidecar. Per-neuron and
+per-volume rates then use only the configured/inferred subset.
+
+Use `PROOFREADING_SCOPE = "complete"` only after all raw neuron IDs in the
+selected volume range have been reviewed. Complete mode reports the global
+move error probability (`moved / eligible observations`), its inferred
+position-accuracy complement, and whole-dataset neuron fractions.
+
+Set the matching raw `neuron_point_tuple.npy` path for an exact denominator
+when raw observations may contain NaN or invalid boxes. With no raw NPY,
+schema-v2 JSON can still be analyzed, but every raw `(volume, neuron)` slot is
+assumed valid. Schema-v1 JSON requires the raw NPY because it does not contain
+`changed_fields`.
+
+The sidecar records final differences, not the sequence or count of editing
+actions. Also, inferred accuracy assumes the requested volume range was fully
+proofread; an unchanged observation alone does not prove it was reviewed.
+
 ## Alternative installation with pip
 
 Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.4.2 with napari and a Qt backend:
