@@ -78,10 +78,14 @@ def _check_file(path: Path, description: str) -> None:
         raise FileNotFoundError(f"{description} does not exist: {path}")
 
 
-def _load_npy_inputs() -> tuple[np.ndarray, Path]:
+def _load_npy_inputs() -> tuple[np.ndarray, Path | None]:
     _check_file(IMAGE_PATH, "Image NPY")
-    _check_file(ROI_PATH, "ROI NPY")
     volumes = np.load(IMAGE_PATH, mmap_mode="r", allow_pickle=False)
+    if ROI_PATH is None:
+        _validate_image_and_roi(volumes, None)
+        return volumes, None
+
+    _check_file(ROI_PATH, "ROI NPY")
     roi = np.load(ROI_PATH, mmap_mode="r", allow_pickle=False)
     _validate_image_and_roi(volumes, roi)
     return volumes, ROI_PATH
@@ -132,9 +136,11 @@ def _load_raw_inputs(mode: SourceMode):
     return dataset
 
 
-def _validate_image_and_roi(volumes, roi: np.ndarray) -> None:
+def _validate_image_and_roi(volumes, roi: np.ndarray | None) -> None:
     if volumes.ndim != 4:
         raise ValueError("Expected a (T,Z,Y,X) Image array")
+    if roi is None:
+        return
     if roi.ndim != 3 or roi.shape[2] < 6:
         raise ValueError("Expected a (T,N,K>=6) ROI array")
     if roi.shape[0] != volumes.shape[0]:
@@ -210,6 +216,7 @@ def main() -> None:
             if labels_index >= 0:
                 widget.labels_combo.setCurrentIndex(labels_index)
         widget.z_divisor_spin.setValue(Z_DIVISOR)
+        if roi_path is not None:
         widget.load_roi_path(roi_path)
 
         if widget.active_id is not None:

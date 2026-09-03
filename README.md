@@ -18,7 +18,7 @@ A prepared dataset has this layout:
 ```text
 dataset/
 ├── volumes.npy
-├── neuron_point_tuple.npy
+├── neuron_point_tuple.npy # optional for image-only viewing
 └── neuron_mask.npy       # optional
 ```
 
@@ -311,7 +311,7 @@ python script/launch_datasets.py
 
 ### Dataset files were not found
 
-Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy` and `neuron_point_tuple.npy`. When `LABELS_PATH` is not `None`, confirm that it points to an existing `neuron_mask.npy`. Check path spelling and use a raw string for Windows paths:
+Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy`. When `ROI_PATH` or `LABELS_PATH` is not `None`, confirm that it points to an existing ROI or Labels NPY respectively. Check path spelling and use a raw string for Windows paths:
 
 ```python
 DATA_DIR = Path(r"D:\data\worm_dataset")

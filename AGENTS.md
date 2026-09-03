@@ -28,13 +28,13 @@ dataset conversion in the standalone preprocessing script.
 
 ## Dataset contract
 
-NPY mode requires these files in `DATA_DIR`:
+NPY mode requires this file in `DATA_DIR`:
 
 - `volumes.npy`: a `(T, Z, Y, X)` Image array.
-- `neuron_point_tuple.npy`: a `(T, N, K)` ROI array with `K >= 6`.
 
-`neuron_mask.npy` is optional. `LABELS_PATH = None` disables Labels loading;
-set it to a `Path` to load an overlay.
+`neuron_point_tuple.npy` is an optional `(T, N, K)` ROI array with `K >= 6`.
+`ROI_PATH = None` disables ROI loading. `neuron_mask.npy` is optional;
+`LABELS_PATH = None` disables Labels loading, while a `Path` loads an overlay.
 
 The preprocessing script stores ROI Z coordinates in scaled units. Keep
 `Z_SCALE_RATIO` in the preprocessing script equal to `Z_DIVISOR` in the
