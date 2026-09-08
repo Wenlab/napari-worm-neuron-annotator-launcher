@@ -183,6 +183,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-engine-0.2.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-manager-0.1.11-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-svg-0.2.1-pyha07c04f_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.25.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.6-hdb14827_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/nest-asyncio-1.6.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
@@ -207,6 +208,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/pixman-0.46.4-h54a6638_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.11.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ply-3.11-pyhd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pooch-1.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.53-pyha770c72_0.conda
@@ -305,7 +307,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zlib-ng-2.3.3-hceb46e0_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
-      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/17/37/0e634171299f8d9ecc3007aa0c8f2ee52ad165160a240415c99ae8262662/napari_worm_neuron_annotator-0.4.3-py3-none-any.whl
       osx-64:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/_openmp_mutex-4.5-7_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
@@ -466,6 +468,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-engine-0.2.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-manager-0.1.11-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-svg-0.2.1-pyha07c04f_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.25.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/ncurses-6.6-hcc0dc9a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/nest-asyncio-1.6.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
@@ -490,6 +493,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/pixman-0.46.4-h2fb4741_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.11.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ply-3.11-pyhd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pooch-1.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.53-pyha770c72_0.conda
@@ -567,7 +571,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/zlib-ng-2.3.3-h8bce59a_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/zstd-1.5.7-h3eecb57_6.conda
-      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/17/37/0e634171299f8d9ecc3007aa0c8f2ee52ad165160a240415c99ae8262662/napari_worm_neuron_annotator-0.4.3-py3-none-any.whl
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-7_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
@@ -728,6 +732,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-engine-0.2.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-manager-0.1.11-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-svg-0.2.1-pyha07c04f_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.25.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/ncurses-6.6-h1d4f5a5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/nest-asyncio-1.6.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
@@ -752,6 +757,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/pixman-0.46.4-h784d473_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.11.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ply-3.11-pyhd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pooch-1.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.53-pyha770c72_0.conda
@@ -829,7 +835,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-hed4e4f5_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/17/37/0e634171299f8d9ecc3007aa0c8f2ee52ad165160a240415c99ae8262662/napari_worm_neuron_annotator-0.4.3-py3-none-any.whl
       win-64:
       - conda: https://conda.anaconda.org/conda-forge/win-64/_libavif_api-1.4.2-h11686cb_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/_openmp_mutex-4.5-20_gnu.conda
@@ -982,6 +988,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-engine-0.2.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-plugin-manager-0.1.11-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/napari-svg-0.2.1-pyha07c04f_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.25.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/nest-asyncio-1.6.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/npe2-0.8.3-pyhd8ed1ab_0.conda
@@ -1004,6 +1011,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/pixman-0.46.4-h5112557_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.11.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ply-3.11-pyhd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pooch-1.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.53-pyha770c72_0.conda
@@ -1088,7 +1096,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/zlib-1.3.2-hfd05255_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zlib-ng-2.3.3-h0261ad2_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zstd-1.5.7-h534d264_6.conda
-      - pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/17/37/0e634171299f8d9ecc3007aa0c8f2ee52ad165160a240415c99ae8262662/napari_worm_neuron_annotator-0.4.3-py3-none-any.whl
 packages:
 - conda: https://conda.anaconda.org/conda-forge/win-64/_libavif_api-1.4.2-h11686cb_3.conda
   sha256: 699636321392c880feaa54162b15edd786927bf614396c571eae6d43b3b3415b
@@ -6967,10 +6975,10 @@ packages:
   - pkg:pypi/napari-svg?source=hash-mapping
   size: 19988
   timestamp: 1736862579398
-- pypi: https://files.pythonhosted.org/packages/7b/97/1fa6761aa328551a7ac58f380e9e5c2d599be264d3360bb178353a5a624f/napari_worm_neuron_annotator-0.4.2-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/17/37/0e634171299f8d9ecc3007aa0c8f2ee52ad165160a240415c99ae8262662/napari_worm_neuron_annotator-0.4.3-py3-none-any.whl
   name: napari-worm-neuron-annotator
-  version: 0.4.2
-  sha256: 738ce8ccb769a83abc1624c26bee850c066273f4d8d4d34636858545404edb91
+  version: 0.4.3
+  sha256: acc0832c27a92137bd55c00ac6d764c6aef478d5ffc3653bd1ef118d09f2d354
   requires_dist:
   - napari>=0.8,<0.9
   - numpy
@@ -6983,6 +6991,18 @@ packages:
   - pytest-qt ; extra == 'testing'
   - napari[pyqt6]>=0.8,<0.9 ; extra == 'testing'
   requires_python: '>=3.11,<3.15'
+- conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.25.0-pyhcf101f3_0.conda
+  sha256: e48d972fae8e32ca43eefd1a9649afa3a82b4dda5fe12caa441f0bc9e8d1938d
+  md5: 0117bf65e45c951a9b0004172cfaeef6
+  depends:
+  - python >=3.10
+  - python
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/narwhals?source=compressed-mapping
+  size: 293989
+  timestamp: 1787261063562
 - conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.6-hdb14827_0.conda
   sha256: fc89f74bbe362fb29fa3c037697a89bec140b346a2469a90f7936d1d7ea4d8a3
   md5: fc21868a1a5aacc937e7a18747acb8a5
@@ -8144,6 +8164,21 @@ packages:
   - pkg:pypi/platformdirs?source=compressed-mapping
   size: 26632
   timestamp: 1784661349391
+- conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
+  sha256: b92b10adbeff5c539c130a4d171338404b3618e15f1154b3afb9dba15441e611
+  md5: 452e17d774bb4d3211ae2cf5bfb2c1c9
+  depends:
+  - narwhals >=1.15.1
+  - packaging
+  - python >=3.10
+  constrains:
+  - ipywidgets >=7.6
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/plotly?source=hash-mapping
+  size: 5239872
+  timestamp: 1783625491771
 - conda: https://conda.anaconda.org/conda-forge/noarch/ply-3.11-pyhd8ed1ab_3.conda
   sha256: bae453e5cecf19cab23c2e8929c6e30f4866d996a8058be16c797ed4b935461f
   md5: fd5062942bfa1b0bd5e0d2a4397b099e

@@ -15,9 +15,10 @@ h5py = ">=3.11,<4"
 scipy = ">=1.13,<2"
 tifffile = ">=2024.6"
 dask-core = ">=2024.6"
+plotly = ">=6,<7"
 
 [pypi-dependencies]
-napari-worm-neuron-annotator = "==0.4.2"
+napari-worm-neuron-annotator = "==0.4.3"
 
 [tasks]
 start = "python script/launch_datasets.py"

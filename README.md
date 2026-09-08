@@ -25,7 +25,7 @@ dataset/
 | File                     | Expected content                                                                                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `volumes.npy`            | Image array with shape `(T, Z, Y, X)`. The bundled exporter writes `float32`.                                                                                  |
-| `neuron_point_tuple.npy` | ROI array with shape `(T, N, K)`, where `K >= 6`. The first six fields are `x`, `y`, `z_scaled`, `width`, `height`, and `depth_scaled`; the exporter writes `float32`. |
+| `neuron_point_tuple.npy` | Optional launcher ROI array with shape `(T, N, K)`, where `K >= 6`. The first six fields are `x`, `y`, `z_scaled`, `width`, `height`, and `depth_scaled`; the exporter writes `float32`. |
 | `neuron_mask.npy`        | Optional integer Labels array with the same `(T, Z, Y, X)` shape as `volumes.npy`; the exporter writes `int16`, with `label_value = neuron_id + 1`.            |
 
 ## Export a prepared dataset
@@ -107,7 +107,7 @@ Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the 
 | `raw-eager` | Reads and transforms every selected TIFF plane at startup | Reads and transforms ROI data in memory | None |
 | `raw-virtual` | Builds a plane-chunked Dask array and reads TIFF data on demand | Reads and transforms ROI data in memory | None |
 
-The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.4.2 accepts an ROI path rather than an in-memory array.
+The two raw modes do not export a prepared dataset. They create one session-only ROI NPY because plugin version 0.4.3 accepts an ROI path rather than an in-memory array.
 
 ### 3. Start the application
 
@@ -124,6 +124,7 @@ The main dataset-specific settings are located near the top of `script/launch_da
 SOURCE_MODE = "npy"
 
 DATA_DIR = Path("/path/to/dataset")
+ROI_PATH = DATA_DIR / "neuron_point_tuple.npy"  # or None
 
 # Used by raw-eager and raw-virtual modes.
 TIFF_PATH = Path("/path/to/tiff/source")
@@ -141,6 +142,7 @@ IMAGE_CONTRAST_LIMITS = (102, 400)
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `SOURCE_MODE`           | `npy`, `raw-eager`, or `raw-virtual`                                          |
 | `DATA_DIR`              | Directory containing the required NPY files in `npy` mode                     |
+| `ROI_PATH`              | Optional ROI NPY path in `npy` mode; use `None` for image-only viewing         |
 | `TIFF_PATH`             | Numbered TIFF directory or multi-page stack used by both raw modes            |
 | `RAW_ROI_SOURCE_MODE`   | `dynamics` or `realtime-results`                                               |
 | `RAW_ROI_SOURCE_PATH`   | A dynamics HDF5 file or realtime-results directory used by both raw modes      |
@@ -181,15 +183,15 @@ Raw ROI data is transformed eagerly and written to a temporary NPY for the plugi
 
 In `npy` mode, the launcher:
 
-1. Checks that `volumes.npy` and `neuron_point_tuple.npy` exist.
+1. Checks that `volumes.npy` exists and, when `ROI_PATH` is not `None`, checks the ROI file.
 2. Opens the Image array using read-only NumPy memory mapping.
-3. Verifies that the ROI and Image arrays have matching time dimensions.
-4. Applies the configured `Z_DIVISOR` when loading ROI coordinates.
+3. When ROI is enabled, verifies that its time dimension matches the Image.
+4. When ROI is enabled, applies the configured `Z_DIVISOR` while loading it.
 5. When `LABELS_PATH` is not `None`, opens that Labels file and verifies that it is an integer array matching the Image shape.
 6. Creates the napari viewer and adds the Image and optional Labels layers.
 7. Creates and docks the plugin.
-8. Loads the ROI file.
-9. Checks, activates, and locates the first valid neuron.
+8. When ROI is enabled, loads the ROI file.
+9. When ROI is enabled, checks, activates, and locates the first valid neuron.
 
 In either raw mode, the launcher prepares Image and ROI arrays from `TIFF_PATH` and the configured raw ROI source without writing `volumes.npy` or a persistent ROI file. `raw-eager` returns a NumPy Image array; `raw-virtual` returns a Dask Image array. Both modes use the same geometry code as NPY export.
 
@@ -209,6 +211,18 @@ In either raw mode, the launcher prepares Image and ROI arrays from `TIFF_PATH` 
 - Use **All** to check every neuron identity.
 - Use **None** to clear both checked and active states.
 - Enable **Show selected box labels** to display one text label for each currently rendered checked neuron. The plugin uses the `biological` value when available and otherwise displays the zero-based `neuron_id`. The text color can be changed with the **Text color** control.
+- Use **Show neuron overlays** or **F10** to hide or show plugin-generated neuron boxes and box labels without changing the selected neurons. This display toggle is unavailable while proofreading is enabled.
+
+### Proofreading safeguards in plugin v0.4.3
+
+For file-backed ROI data, applied unsaved proofreading edits are automatically
+protected about every 30 seconds. Use **Recovery…** to explicitly restore or
+delete a recovery snapshot; snapshots are never restored automatically. Before
+overwriting an existing formal proofreading JSON, the plugin preserves its
+previous contents in a sibling `.history` directory and retains the newest 10
+distinct versions. Use **History…** to load an older version as the current
+working state. **Discard scope** can restore only the active neuron at the
+current time, that neuron at all times, or all unsaved edits.
 
 ## Z Layers
 
@@ -246,50 +260,12 @@ LABELS_PATH = DATA_DIR / "neuron_mask.npy"
 
 When loaded, a dense or opaque Labels display may obscure the underlying image or the Vectors ROI boxes. Hide the Labels layer with the eye icon in napari's layer list, or set both checked and unchecked label opacity to `0`. These operations affect display only and do not modify `neuron_mask.npy`.
 
-## Proofreading accuracy statistics
-
-`script/analyze_proofreading.py` summarizes the sparse JSON sidecars produced
-by proofreading. Edit `PROOFREADING_INPUTS`, `PROOFREADING_SCOPE`,
-`PARTIAL_NEURON_IDS`, `OUTPUT_DIR`, and the optional half-open
-`VOLUME_RANGE = (start, stop)` near the top of that script, then run:
-
-```bash
-pixi run proofread-stats
-```
-
-For each sidecar, the script writes `summary.json`, `per_neuron.csv`,
-`per_volume.csv`, and `modified_observations.csv`. A move is an observation
-whose final `center_zyx` differs from its raw ROI center. Global resize is
-reported at neuron level and is identified from the plugin's `placement_size`
-metadata plus at least one effective `size_zyx` difference.
-
-The default `PROOFREADING_SCOPE = "partial"` reports only raw neuron IDs found
-in the sidecar and does not publish whole-dataset accuracy or neuron-fraction
-metrics. Set `PARTIAL_NEURON_IDS` when proofreading included unchanged IDs,
-because unchanged IDs leave no record in a sparse sidecar. Per-neuron and
-per-volume rates then use only the configured/inferred subset.
-
-Use `PROOFREADING_SCOPE = "complete"` only after all raw neuron IDs in the
-selected volume range have been reviewed. Complete mode reports the global
-move error probability (`moved / eligible observations`), its inferred
-position-accuracy complement, and whole-dataset neuron fractions.
-
-Set the matching raw `neuron_point_tuple.npy` path for an exact denominator
-when raw observations may contain NaN or invalid boxes. With no raw NPY,
-schema-v2 JSON can still be analyzed, but every raw `(volume, neuron)` slot is
-assumed valid. Schema-v1 JSON requires the raw NPY because it does not contain
-`changed_fields`.
-
-The sidecar records final differences, not the sequence or count of editing
-actions. Also, inferred accuracy assumes the requested volume range was fully
-proofread; an unchanged observation alone does not prove it was reviewed.
-
 ## Alternative installation with pip
 
-Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.4.2 with napari and a Qt backend:
+Pixi is recommended for reproducible use. If Pixi is not available, create a Python 3.11–3.14 environment and install plugin version 0.4.3 with napari and a Qt backend:
 
 ```bash
-pip install "napari-worm-neuron-annotator[all]==0.4.2"
+pip install "napari-worm-neuron-annotator[all]==0.4.3"
 python script/launch_datasets.py
 ```
 
@@ -303,7 +279,7 @@ python preprocess/export_dataset_to_npy.py
 If the Python environment already contains a working napari and Qt installation:
 
 ```bash
-pip install "napari-worm-neuron-annotator==0.4.2"
+pip install "napari-worm-neuron-annotator==0.4.3"
 python script/launch_datasets.py
 ```
 
