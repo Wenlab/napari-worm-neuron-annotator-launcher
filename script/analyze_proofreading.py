@@ -45,7 +45,17 @@ PROOFREADING_SCOPE: ProofreadingScope = "partial"
 PARTIAL_NEURON_IDS: tuple[int, ...] | None = None
 
 # Optional raw NPY volume-index range [start, stop). None analyzes all volumes.
-VOLUME_RANGE: tuple[int, int] | None = None
+VOLUME_RANGE: tuple[int, int] | None = (0, 1000)
+# One complete raw NPY volume defines the anatomical point cloud. This is
+# intentionally independent of VOLUME_RANGE, which only controls error rates.
+POINT_CLOUD_VOLUME_INDEX = 551
+# Orient the representative cloud before drawing the three 2D views.
+POINT_CLOUD_ALIGN_XY = True
+POINT_CLOUD_ROTATE_CCW_DEGREES = 90.0
+POINT_CLOUD_FLIP_X = True
+POINT_CLOUD_FLIP_Y = False
+REVIEWED_POINT_SIZE = 8
+UNREVIEWED_POINT_SIZE = 6
 VERIFY_RAW_SHA256 = True
 RAW_COUNT_CHUNK_VOLUMES = 256
 
@@ -301,18 +311,15 @@ def _resolve_fields(
     return tuple(resolved)
 
 
-def _analysis_neuron_ids(
-    sidecar: Sidecar, patches: tuple[Patch, ...]
-) -> tuple[int, ...]:
+def _analysis_neuron_ids(sidecar: Sidecar) -> tuple[int, ...]:
     if PROOFREADING_SCOPE == "complete":
         return tuple(range(sidecar.raw_n))
     if PROOFREADING_SCOPE != "partial":
         raise ValueError("PROOFREADING_SCOPE must be 'partial' or 'complete'")
 
-    if PARTIAL_NEURON_IDS is None:
         neuron_ids = {
             patch.neuron_id
-            for patch in patches
+        for patch in sidecar.patches
             if patch.neuron_id < sidecar.raw_n
         }
         neuron_ids.update(
@@ -320,23 +327,9 @@ def _analysis_neuron_ids(
             for neuron_id in sidecar.delete_all_ids | sidecar.placement_size_ids
             if neuron_id < sidecar.raw_n
         )
-    else:
-        neuron_ids = set(PARTIAL_NEURON_IDS)
-        if len(neuron_ids) != len(PARTIAL_NEURON_IDS):
-            raise ValueError("PARTIAL_NEURON_IDS contains duplicate IDs")
-    if any(
-        isinstance(neuron_id, bool)
-        or not isinstance(neuron_id, int)
-        or not 0 <= neuron_id < sidecar.raw_n
-        for neuron_id in neuron_ids
-    ):
-        raise ValueError(
-            f"PARTIAL_NEURON_IDS must be within [0, {sidecar.raw_n})"
-        )
     if not neuron_ids:
         raise ValueError(
-            "no raw neuron IDs can be inferred from this sidecar; set "
-            "PARTIAL_NEURON_IDS explicitly"
+            "no reviewed raw neuron IDs can be inferred from this sidecar"
         )
     return tuple(sorted(neuron_ids))
 
@@ -437,11 +430,332 @@ def _report_name(path: Path) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "_" for char in text)
 
 
+def _raw_point_cloud(raw_roi: np.ndarray, sidecar: Sidecar) -> np.ndarray:
+    """Return XYZ from one complete raw NPY volume without temporal averaging."""
+    volume_index = POINT_CLOUD_VOLUME_INDEX
+    if not 0 <= volume_index < sidecar.raw_t:
+        raise ValueError(
+            f"POINT_CLOUD_VOLUME_INDEX must be within [0, {sidecar.raw_t})"
+        )
+    values = np.asarray(raw_roi[volume_index, :, :6], dtype=float)
+    valid = np.all(np.isfinite(values), axis=1)
+    valid &= np.all(values[:, 3:6] > 0, axis=1)
+    centers_xyz = np.full((sidecar.raw_n, 3), np.nan, dtype=float)
+    centers_xyz[valid] = values[valid, :3]
+    return centers_xyz
+
+
+def _rotate_xy(
+    points_xy: np.ndarray, center_xy: np.ndarray, degrees_ccw: float
+) -> np.ndarray:
+    angle = math.radians(float(degrees_ccw))
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    rotation = np.asarray([[cosine, -sine], [sine, cosine]], dtype=float)
+    return (points_xy - center_xy) @ rotation.T + center_xy
+
+
+def _orient_point_cloud_xy(centers_xyz: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
+    """Apply deterministic PCA orientation, rotation, and flips in XY."""
+    oriented = np.asarray(centers_xyz, dtype=float).copy()
+    valid = np.all(np.isfinite(oriented), axis=1)
+    points_xy = oriented[valid, :2]
+    if points_xy.shape[0] < 2:
+        raise ValueError("at least two finite neuron positions are required")
+
+    center_xy = np.median(points_xy, axis=0)
+    pca_angle_degrees: float | None = None
+    if POINT_CLOUD_ALIGN_XY:
+        centered = points_xy - center_xy
+        _, singular_values, right_vectors = np.linalg.svd(
+            centered, full_matrices=False
+        )
+        if singular_values[0] <= np.finfo(np.float32).eps:
+            raise ValueError("point-cloud XY coordinates have no PCA direction")
+        principal_axis = right_vectors[0]
+        # Resolve the PCA sign ambiguity toward the original +Y direction.
+        if principal_axis[1] < 0 or (
+            np.isclose(principal_axis[1], 0.0) and principal_axis[0] < 0
+        ):
+            principal_axis = -principal_axis
+        source_angle = math.atan2(principal_axis[1], principal_axis[0])
+        pca_angle_degrees = math.degrees(math.pi / 2.0 - source_angle)
+        points_xy = _rotate_xy(points_xy, center_xy, pca_angle_degrees)
+
+    points_xy = _rotate_xy(
+        points_xy, center_xy, POINT_CLOUD_ROTATE_CCW_DEGREES
+    )
+    if POINT_CLOUD_FLIP_X:
+        points_xy[:, 0] = 2.0 * center_xy[0] - points_xy[:, 0]
+    if POINT_CLOUD_FLIP_Y:
+        points_xy[:, 1] = 2.0 * center_xy[1] - points_xy[:, 1]
+    oriented[valid, :2] = points_xy
+    return oriented, {
+        "pca_aligned": POINT_CLOUD_ALIGN_XY,
+        "pca_target_axis": "+Y" if POINT_CLOUD_ALIGN_XY else None,
+        "pca_rotation_ccw_degrees": pca_angle_degrees,
+        "additional_rotation_ccw_degrees": POINT_CLOUD_ROTATE_CCW_DEGREES,
+        "flip_x": POINT_CLOUD_FLIP_X,
+        "flip_y": POINT_CLOUD_FLIP_Y,
+        "center_xy": [float(value) for value in center_xy],
+    }
+
+
+def _write_error_map_2d_html(
+    path: Path,
+    sidecar: Sidecar,
+    raw_roi: np.ndarray,
+    neuron_ids: tuple[int, ...],
+    per_neuron: list[dict[str, Any]],
+    start: int,
+    stop: int,
+) -> dict[str, Any]:
+    centers_xyz = _raw_point_cloud(raw_roi, sidecar)
+    centers_xyz, orientation = _orient_point_cloud_xy(centers_xyz)
+    reviewed_ids = set(neuron_ids)
+    stats_by_id = {
+        int(row["neuron_id"]): row
+        for row in per_neuron
+        if row["identity_type"] == "raw"
+    }
+    plotted_ids = [
+        neuron_id
+        for neuron_id in range(sidecar.raw_n)
+        if np.all(np.isfinite(centers_xyz[neuron_id]))
+    ]
+    reviewed_plotted = [
+        neuron_id for neuron_id in plotted_ids if neuron_id in reviewed_ids
+    ]
+    unreviewed_plotted = [
+        neuron_id for neuron_id in plotted_ids if neuron_id not in reviewed_ids
+    ]
+    if not plotted_ids:
+        raise ValueError("no raw neuron has a valid position for the 2D error map")
+    plotted_centers = centers_xyz[plotted_ids]
+    data_min = np.min(plotted_centers, axis=0)
+    data_max = np.max(plotted_centers, axis=0)
+    data_span = data_max - data_min
+    padding = np.maximum(data_span * 0.05, 1.0)
+    axis_ranges = {
+        "x": [float(data_min[0] - padding[0]), float(data_max[0] + padding[0])],
+        "y": [float(data_max[1] + padding[1]), float(data_min[1] - padding[1])],
+        "z": [float(data_min[2] - padding[2]), float(data_max[2] + padding[2])],
+    }
+    display_span = data_span + 2.0 * padding
+
+    figure = make_subplots(
+        rows=2,
+        cols=2,
+        specs=[[{}, None], [{}, {}]],
+        subplot_titles=("XOZ", "XOY", "ZY"),
+        # Allocate subplot windows in proportion to the actual anatomical
+        # spans: XOY dominates, while Z-containing views stay narrow.
+        column_widths=(float(display_span[0]), float(display_span[2])),
+        row_heights=(float(display_span[2]), float(display_span[1])),
+        horizontal_spacing=0.015,
+        vertical_spacing=0.025,
+    )
+    projections = (
+        (1, 1, 0, 2, "X", "Z"),
+        (2, 1, 0, 1, "X", "Y"),
+        (2, 2, 2, 1, "Z", "Y"),
+    )
+    reviewed_rates = [
+        stats_by_id[neuron_id]["move_error_probability"] or 0.0
+        for neuron_id in reviewed_plotted
+    ]
+    if reviewed_rates:
+        color_min = min(reviewed_rates)
+        color_max = max(reviewed_rates)
+        if math.isclose(color_min, color_max):
+            color_min = max(0.0, color_min - 0.005)
+            color_max = min(1.0, color_max + 0.005)
+            if math.isclose(color_min, color_max):
+                color_max = color_min + 0.01
+    else:
+        color_min, color_max = 0.0, 1.0
+    reviewed_hover = [
+        [
+            neuron_id,
+            stats_by_id[neuron_id]["moved_observations"],
+            stats_by_id[neuron_id]["eligible_raw_observations"],
+            stats_by_id[neuron_id]["resized_observations"],
+            stats_by_id[neuron_id]["presence_changed_observations"],
+        ]
+        for neuron_id in reviewed_plotted
+    ]
+    unreviewed_hover = [[neuron_id] for neuron_id in unreviewed_plotted]
+
+    for projection_index, (
+        row,
+        column,
+        x_index,
+        y_index,
+        x_label,
+        y_label,
+    ) in enumerate(projections):
+        if unreviewed_plotted:
+            coordinates = centers_xyz[unreviewed_plotted]
+            figure.add_trace(
+                go.Scatter(
+                    x=coordinates[:, x_index],
+                    y=coordinates[:, y_index],
+                    mode="markers",
+                    name="Unreviewed",
+                    legendrank=2,
+                    showlegend=projection_index == 0,
+                    customdata=unreviewed_hover,
+                    marker={
+                        "size": UNREVIEWED_POINT_SIZE,
+                        "color": "#9e9e9e",
+                        "opacity": 0.65,
+                        "line": {"color": "#606060", "width": 0.25},
+                    },
+                    hovertemplate=(
+                        "Neuron %{customdata[0]}<br>"
+                        "Status: unreviewed<br>"
+                        f"Position source: raw NPY volume {POINT_CLOUD_VOLUME_INDEX}<br>"
+                        f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}"
+                        "<extra></extra>"
+                    ),
+                ),
+                row=row,
+                col=column,
+            )
+        if reviewed_plotted:
+            coordinates = centers_xyz[reviewed_plotted]
+            figure.add_trace(
+                go.Scatter(
+                    x=coordinates[:, x_index],
+                    y=coordinates[:, y_index],
+                    mode="markers",
+                    name="Reviewed",
+                    legendrank=1,
+                    showlegend=projection_index == 0,
+                    customdata=reviewed_hover,
+                    marker={
+                        "size": REVIEWED_POINT_SIZE,
+                        "color": reviewed_rates,
+                        "colorscale": "Viridis",
+                        "cmin": color_min,
+                        "cmax": color_max,
+                        "showscale": projection_index == 2,
+                        "colorbar": {
+                            "title": "Move error rate",
+                            "tickformat": ".0%",
+                            "x": 1.02,
+                        },
+                        "line": {"color": "#202020", "width": 0.25},
+                    },
+                    hovertemplate=(
+                        "Neuron %{customdata[0]}<br>"
+                        "Status: reviewed<br>"
+                        "Move error rate: %{marker.color:.2%}<br>"
+                        "Moved: %{customdata[1]} / %{customdata[2]}<br>"
+                        "Resized observations: %{customdata[3]}<br>"
+                        "Presence changes: %{customdata[4]}<br>"
+                        f"Position source: raw NPY volume {POINT_CLOUD_VOLUME_INDEX}<br>"
+                        f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}"
+                        "<extra></extra>"
+                    ),
+                ),
+                row=row,
+                col=column,
+            )
+
+    x_axes = (
+        (1, 1, "X", axis_ranges["x"]),
+        (2, 1, "X", axis_ranges["x"]),
+        (2, 2, "Z", axis_ranges["z"]),
+    )
+    y_axes = (
+        (1, 1, "Z", axis_ranges["z"], "x"),
+        (2, 1, "Y", axis_ranges["y"], "x2"),
+        (2, 2, "Y", axis_ranges["y"], "x3"),
+    )
+    for row, column, title, axis_range in x_axes:
+        figure.update_xaxes(
+            title_text=title,
+            range=axis_range,
+            nticks=5,
+            zeroline=False,
+            fixedrange=False,
+            row=row,
+            col=column,
+        )
+    for row, column, title, axis_range, anchor in y_axes:
+        figure.update_yaxes(
+            title_text=title,
+            range=axis_range,
+            nticks=5,
+            zeroline=False,
+            scaleanchor=anchor,
+            scaleratio=1,
+            fixedrange=False,
+            row=row,
+            col=column,
+        )
+
+    figure.update_layout(
+        template="plotly_white",
+        height=700,
+        hovermode="closest",
+        dragmode="zoom",
+        # legend={
+        #     "orientation": "h",
+        #     "x": 0.98,
+        #     "xanchor": "right",
+        #     "y": 1.16,
+        #     "yanchor": "bottom",
+        #     "itemsizing": "constant",
+        # },
+        showlegend=False,
+        margin={"l": 60, "r": 100, "b": 50, "t": 105},
+    )
+    figure.write_html(
+        path,
+        include_plotlyjs=True,
+        full_html=True,
+        auto_open=False,
+        config={
+            "displaylogo": False,
+            "responsive": True,
+            "scrollZoom": True,
+            "doubleClick": "reset",
+        },
+    )
+    return {
+        "generated": True,
+        "path": path.name,
+        "plot_type": "three orthographic 2D projections",
+        "projections": ["XOZ", "XOY", "ZY"],
+        "reviewed_neurons_plotted": len(reviewed_plotted),
+        "unreviewed_neurons_plotted": len(unreviewed_plotted),
+        "neurons_without_valid_position": sidecar.raw_n - len(plotted_ids),
+        "position_definition": (
+            "raw neuron_point_tuple.npy XYZ from one complete volume"
+        ),
+        "point_cloud_volume_index": POINT_CLOUD_VOLUME_INDEX,
+        "z_coordinate_units": "raw neuron_point_tuple.npy scaled Z",
+        "color_definition": "moved observations / eligible raw observations",
+        "color_range": [color_min, color_max],
+        "color_range_source": "observed reviewed-neuron error-rate range",
+        "marker_sizes": {
+            "reviewed": REVIEWED_POINT_SIZE,
+            "unreviewed": UNREVIEWED_POINT_SIZE,
+        },
+        "axis_scale": "equal numeric units in all projections",
+        "axis_ranges": axis_ranges,
+        "subplot_window_ratio_xyz": [float(value) for value in display_span],
+        "orientation": orientation,
+    }
+
+
 def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
     sidecar = _load_sidecar(sidecar_path)
     raw_roi = _load_raw_roi(raw_roi_path, sidecar)
     patches = _resolve_fields(sidecar, raw_roi)
-    neuron_ids = _analysis_neuron_ids(sidecar, patches)
+    neuron_ids = _analysis_neuron_ids(sidecar)
     start, stop = _volume_bounds(sidecar.raw_t)
     events = _selected_events(
         patches, sidecar, raw_roi, neuron_ids, start, stop
@@ -571,11 +885,10 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
         warnings.append(
             "No raw ROI NPY was supplied, so every raw (volume, neuron) slot was assumed valid."
         )
-    if PROOFREADING_SCOPE == "partial" and PARTIAL_NEURON_IDS is None:
+    if PROOFREADING_SCOPE == "partial":
         warnings.append(
-            "Partial-mode neuron IDs were inferred from sidecar changes and "
-            "global markers. Reviewed but unchanged IDs cannot be inferred "
-            "from a sparse sidecar."
+            "Partial-mode reviewed neuron IDs are the raw IDs that occur in "
+            "the sidecar observation patches or global markers."
         )
 
     counts = {
@@ -618,8 +931,26 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             ),
         }
 
+    report_dir = OUTPUT_DIR / _report_name(sidecar.path)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    if raw_roi is None:
+        error_map = {
+            "generated": False,
+            "reason": "A matching raw ROI NPY is required for 3D positions.",
+        }
+    else:
+        error_map = _write_error_map_2d_html(
+            report_dir / "neuron_error_map_2d.html",
+            sidecar,
+            raw_roi,
+            neuron_ids,
+            per_neuron,
+            start,
+            stop,
+        )
+
     summary = {
-        "report_schema_version": 2,
+        "report_schema_version": 3,
         "input": {
             "sidecar_path": str(sidecar.path.resolve()),
             "sidecar_schema_version": sidecar.schema_version,
@@ -628,10 +959,7 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             "z_divisor": sidecar.z_divisor,
             "proofreading_scope": PROOFREADING_SCOPE,
             "partial_neuron_id_source": (
-                "explicit_config"
-                if PROOFREADING_SCOPE == "partial"
-                and PARTIAL_NEURON_IDS is not None
-                else "sidecar_inference"
+                "sidecar_patches_and_global_markers"
                 if PROOFREADING_SCOPE == "partial"
                 else None
             ),
@@ -663,11 +991,10 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             "added": sorted(sidecar.added_ids),
             "retired_added": sorted(sidecar.retired_ids),
         },
+        "visualization": error_map,
         "warnings": warnings,
     }
 
-    report_dir = OUTPUT_DIR / _report_name(sidecar.path)
-    report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -716,7 +1043,7 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
     else:
         print(
             f"  partial: reporting {len(neuron_ids)} neuron IDs found in "
-            "the sidecar/config"
+            "the sidecar"
         )
         for row in per_neuron:
             if row["identity_type"] != "raw":
@@ -733,6 +1060,10 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
                 f"global resize={row['has_global_resize']}"
             )
     print(f"  report={summary_path}")
+    if error_map["generated"]:
+        print(f"  2D error map={report_dir / error_map['path']}")
+    else:
+        print(f"  2D error map skipped: {error_map['reason']}")
     return summary_path
 
 
