@@ -11,7 +11,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+import h5py
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 APP_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = APP_DIR.parent
@@ -39,11 +42,6 @@ OUTPUT_DIR = REPOSITORY_DIR / "data" / "proofreading_statistics"
 ProofreadingScope = Literal["partial", "complete"]
 PROOFREADING_SCOPE: ProofreadingScope = "partial"
 
-# In partial mode, None infers IDs that occur in the sidecar's patches or
-# global markers. Explicitly list reviewed-but-unchanged IDs here because an
-# unchanged ID leaves no trace in the sparse JSON.
-PARTIAL_NEURON_IDS: tuple[int, ...] | None = None
-
 # Optional raw NPY volume-index range [start, stop). None analyzes all volumes.
 VOLUME_RANGE: tuple[int, int] | None = (0, 1000)
 # One complete raw NPY volume defines the anatomical point cloud. This is
@@ -58,6 +56,31 @@ REVIEWED_POINT_SIZE = 8
 UNREVIEWED_POINT_SIZE = 6
 VERIFY_RAW_SHA256 = True
 RAW_COUNT_CHUNK_VOLUMES = 256
+
+# Optional behavior/stimulus H5 file for the error-over-time HTML. Each dataset
+# is an (M, 2) int64 array of (start_volume, duration_volume) intervals aligned
+# with the raw NPY volume index (time). Stimulus datasets are drawn as shaded
+# vertical bands on the timeline; behavior datasets are drawn as colored lanes
+# above the axis.
+BEHAVIOR_H5_PATH: Path | None = Path(
+    r"H:\Process_temporary\WJH\neuron_signal_explorer_dist\data"
+    r"\20260304_w3_freelymoving\W3-20260304_freelymoving.h5"
+)
+STIMULUS_DATASETS: tuple[str, ...] = ("stimulus/laser",)
+BEHAVIOR_DATASETS: tuple[str, ...] = (
+    "behavior/reversal",
+    "behavior/pushback",
+    "behavior/omegaturn",
+)
+# Volume-index step used by the draggable error-over-time timeline.
+TIMELINE_STEP = 1
+
+# A corrected center is counted as an error when its shift from the raw NPY
+# center exceeds these thresholds. X and Y use raw voxel units; Z uses scaled
+# units (raw Z divided by z_divisor).
+ERROR_SHIFT_X = 3.0
+ERROR_SHIFT_Y = 3.0
+ERROR_SHIFT_Z = 1.0
 
 
 @dataclass(frozen=True)
@@ -272,6 +295,30 @@ def _raw_geometry(
         (z_scaled / sidecar.z_divisor, y, x),
         (depth_scaled / sidecar.z_divisor, height, width),
     )
+
+
+def _center_shift_error(
+    raw_roi: np.ndarray | None,
+    sidecar: Sidecar,
+    volume_index: int,
+    neuron_id: int,
+    corrected_center_zyx: tuple[float, float, float],
+) -> bool:
+    """Whether a corrected center shifts beyond the error thresholds.
+
+    Returns False when the raw center is unavailable (no raw ROI, invalid raw
+    box, or an added neuron), so the shift cannot be compared.
+    """
+    if raw_roi is None:
+        return False
+    geometry = _raw_geometry(raw_roi, sidecar, volume_index, neuron_id)
+    if geometry is None:
+        return False
+    raw_center, _ = geometry
+    dz = abs(corrected_center_zyx[0] - raw_center[0])
+    dy = abs(corrected_center_zyx[1] - raw_center[1])
+    dx = abs(corrected_center_zyx[2] - raw_center[2])
+    return dx > ERROR_SHIFT_X or dy > ERROR_SHIFT_Y or dz > ERROR_SHIFT_Z
 
 
 def _resolve_fields(
@@ -513,11 +560,7 @@ def _write_error_map_2d_html(
     centers_xyz = _raw_point_cloud(raw_roi, sidecar)
     centers_xyz, orientation = _orient_point_cloud_xy(centers_xyz)
     reviewed_ids = set(neuron_ids)
-    stats_by_id = {
-        int(row["neuron_id"]): row
-        for row in per_neuron
-        if row["identity_type"] == "raw"
-    }
+    stats_by_id = {int(row["neuron_id"]): row for row in per_neuron}
     plotted_ids = [
         neuron_id
         for neuron_id in range(sidecar.raw_n)
@@ -561,7 +604,11 @@ def _write_error_map_2d_html(
         (2, 2, 2, 1, "Z", "Y"),
     )
     reviewed_rates = [
-        stats_by_id[neuron_id]["move_error_probability"] or 0.0
+        _ratio(
+            stats_by_id[neuron_id]["errors"],
+            stats_by_id[neuron_id]["volumes"],
+        )
+        or 0.0
         for neuron_id in reviewed_plotted
     ]
     if reviewed_rates:
@@ -577,10 +624,10 @@ def _write_error_map_2d_html(
     reviewed_hover = [
         [
             neuron_id,
-            stats_by_id[neuron_id]["moved_observations"],
-            stats_by_id[neuron_id]["eligible_raw_observations"],
-            stats_by_id[neuron_id]["resized_observations"],
-            stats_by_id[neuron_id]["presence_changed_observations"],
+            stats_by_id[neuron_id]["moved"],
+            stats_by_id[neuron_id]["volumes"],
+            stats_by_id[neuron_id]["errors"],
+            stats_by_id[neuron_id]["if_resize"],
         ]
         for neuron_id in reviewed_plotted
     ]
@@ -641,7 +688,7 @@ def _write_error_map_2d_html(
                         "cmax": color_max,
                         "showscale": projection_index == 2,
                         "colorbar": {
-                            "title": "Move error rate",
+                            "title": "Error rate",
                             "tickformat": ".0%",
                             "x": 1.02,
                         },
@@ -650,10 +697,11 @@ def _write_error_map_2d_html(
                     hovertemplate=(
                         "Neuron %{customdata[0]}<br>"
                         "Status: reviewed<br>"
-                        "Move error rate: %{marker.color:.2%}<br>"
-                        "Moved: %{customdata[1]} / %{customdata[2]}<br>"
-                        "Resized observations: %{customdata[3]}<br>"
-                        "Presence changes: %{customdata[4]}<br>"
+                        "Error rate: %{marker.color:.2%}<br>"
+                        "Moved: %{customdata[1]}<br>"
+                        "Volumes: %{customdata[2]}<br>"
+                        "Errors: %{customdata[3]}<br>"
+                        "Resized: %{customdata[4]}<br>"
                         f"Position source: raw NPY volume {POINT_CLOUD_VOLUME_INDEX}<br>"
                         f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}"
                         "<extra></extra>"
@@ -737,7 +785,7 @@ def _write_error_map_2d_html(
         ),
         "point_cloud_volume_index": POINT_CLOUD_VOLUME_INDEX,
         "z_coordinate_units": "raw neuron_point_tuple.npy scaled Z",
-        "color_definition": "moved observations / eligible raw observations",
+        "color_definition": "error observations / eligible raw observations",
         "color_range": [color_min, color_max],
         "color_range_source": "observed reviewed-neuron error-rate range",
         "marker_sizes": {
@@ -747,6 +795,404 @@ def _write_error_map_2d_html(
         "axis_scale": "equal numeric units in all projections",
         "axis_ranges": axis_ranges,
         "subplot_window_ratio_xyz": [float(value) for value in display_span],
+        "orientation": orientation,
+    }
+
+
+_BEHAVIOR_LANE_COLORS = (
+    "#e08214",  # orange
+    "#4c78a8",  # blue
+    "#54a24b",  # green
+    "#b279a2",  # mauve
+    "#f58518",  # amber
+)
+
+
+def _load_interval_datasets(path: Path | None) -> dict[str, np.ndarray]:
+    """Load (start, duration) interval datasets from an optional H5 file."""
+    if path is None or not path.is_file():
+        return {}
+    requested = (*STIMULUS_DATASETS, *BEHAVIOR_DATASETS)
+    datasets: dict[str, np.ndarray] = {}
+    with h5py.File(path, "r") as h5_file:
+        for name in requested:
+            if name not in h5_file:
+                continue
+            values = np.asarray(h5_file[name][:], dtype=int)
+            if values.ndim != 2 or values.shape[1] < 2:
+                continue
+            datasets[name] = values[:, :2]
+    return datasets
+
+
+def _write_error_timeline_html(
+    path: Path,
+    sidecar: Sidecar,
+    raw_roi: np.ndarray,
+    events: list[Patch],
+    start: int,
+    stop: int,
+) -> dict[str, Any]:
+    """Write an HTML figure that highlights erroneous neurons over time.
+
+    The anatomical point cloud is fixed at POINT_CLOUD_VOLUME_INDEX. Dragging
+    the timeline slider directly updates the neurons whose corrected centers
+    shifted beyond the error thresholds. There is deliberately no playback or
+    point-cloud animation. The lower panel marks stimulus and behavior
+    intervals.
+    """
+    error_by_volume: dict[int, set[int]] = defaultdict(set)
+    for event in events:
+        if (
+            event.fields
+            and "center_zyx" in event.fields
+            and event.center_zyx is not None
+            and event.neuron_id < sidecar.raw_n
+            and _center_shift_error(
+                raw_roi,
+                sidecar,
+                event.volume_index,
+                event.neuron_id,
+                event.center_zyx,
+            )
+        ):
+            error_by_volume[event.volume_index].add(event.neuron_id)
+
+    centers_xyz = _raw_point_cloud(raw_roi, sidecar)
+    centers_xyz, orientation = _orient_point_cloud_xy(centers_xyz)
+    plotted_ids = [
+        neuron_id
+        for neuron_id in range(sidecar.raw_n)
+        if np.all(np.isfinite(centers_xyz[neuron_id]))
+    ]
+    if not plotted_ids:
+        raise ValueError("no raw neuron has a valid position for the timeline")
+    position_index = {neuron_id: index for index, neuron_id in enumerate(plotted_ids)}
+    cloud_x = centers_xyz[plotted_ids, 0]
+    cloud_y = centers_xyz[plotted_ids, 1]
+    cloud_z = centers_xyz[plotted_ids, 2]
+
+    interval_datasets = _load_interval_datasets(BEHAVIOR_H5_PATH)
+
+    # The timeline spans the full recording so every stimulus and behavior
+    # interval is visible; error highlights only exist within the analyzed
+    # volume range [start, stop).
+    timeline_start, timeline_stop = 0, sidecar.raw_t
+
+    def clip_intervals(values: np.ndarray) -> list[tuple[int, int]]:
+        clipped: list[tuple[int, int]] = []
+        for row in values:
+            interval_start = int(row[0])
+            interval_stop = int(row[0]) + int(row[1])
+            first = max(interval_start, timeline_start)
+            last = min(interval_stop, timeline_stop)
+            if first < last:
+                clipped.append((first, last))
+        return clipped
+
+    stimulus_intervals: list[tuple[int, int]] = []
+    for name in STIMULUS_DATASETS:
+        if name in interval_datasets:
+            stimulus_intervals.extend(clip_intervals(interval_datasets[name]))
+
+    behavior_names = [name for name in BEHAVIOR_DATASETS if name in interval_datasets]
+    lane_by_name = {name: lane + 1 for lane, name in enumerate(behavior_names)}
+    num_lanes = len(behavior_names)
+    lane_top = max(num_lanes + 0.5, 1.0)
+
+    volumes = list(range(timeline_start, timeline_stop, TIMELINE_STEP))
+    initial_volume = volumes[0]
+
+    def error_trace_data(volume_index: int) -> dict[str, list[Any]]:
+        error_ids = sorted(error_by_volume.get(volume_index, ()))
+        indices = [position_index[neuron_id] for neuron_id in error_ids]
+        return {
+            "x": cloud_x[indices].tolist(),
+            "y": cloud_y[indices].tolist(),
+            "z": cloud_z[indices].tolist(),
+            "customdata": [
+                [int(neuron_id), int(volume_index)] for neuron_id in error_ids
+            ],
+        }
+
+    initial_errors = error_trace_data(initial_volume)
+
+    figure = make_subplots(
+        rows=2,
+        cols=1,
+        specs=[[{"type": "scatter3d"}], [{"type": "scatter"}]],
+        row_heights=[0.8, 0.2],
+        vertical_spacing=0.03,
+        subplot_titles=(
+            "Point cloud with erroneous neurons highlighted over time",
+            "Stimulus and behavior timeline",
+        ),
+    )
+
+    figure.add_trace(
+        go.Scatter3d(
+            x=cloud_x,
+            y=cloud_y,
+            z=cloud_z,
+            mode="markers",
+            name="Neurons",
+            customdata=[[int(neuron_id)] for neuron_id in plotted_ids],
+            marker={"size": 3, "color": "#9e9e9e", "opacity": 0.85},
+            hovertemplate="Neuron %{customdata[0]}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter3d(
+            x=initial_errors["x"],
+            y=initial_errors["y"],
+            z=initial_errors["z"],
+            mode="markers",
+            name="Erroneous",
+            customdata=initial_errors["customdata"],
+            marker={"size": 7, "color": "#e53935"},
+            hovertemplate=(
+                "Neuron %{customdata[0]}<br>Volume %{customdata[1]}<extra></extra>"
+            ),
+        ),
+        row=1,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=[initial_volume, initial_volume],
+            y=[0.0, lane_top],
+            mode="lines",
+            name="Time",
+            line={"color": "#e53935", "width": 2},
+            hoverinfo="skip",
+            showlegend=False,
+        ),
+        row=2,
+        col=1,
+    )
+
+    for name in behavior_names:
+        lane = lane_by_name[name]
+        color = _BEHAVIOR_LANE_COLORS[(lane - 1) % len(_BEHAVIOR_LANE_COLORS)]
+        xs: list[float] = []
+        ys: list[float] = []
+        for interval_start, interval_stop in clip_intervals(interval_datasets[name]):
+            xs.extend([interval_start, interval_stop - 1, None])
+            ys.extend([lane, lane, None])
+        figure.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                name=name.rsplit("/", 1)[-1],
+                line={"color": color, "width": 12},
+                hoverinfo="skip",
+            ),
+            row=2,
+            col=1,
+        )
+
+    # The timeline subplot uses the figure's primary xaxis/yaxis (the 3D
+    # subplot consumes ``scene``). Shapes must therefore anchor to "x"/"y"
+    # explicitly rather than via ``add_vrect``, which mishandles mixed 3D/2D
+    # grids.
+    for interval_start, interval_stop in stimulus_intervals:
+        figure.add_shape(
+            type="rect",
+            xref="x",
+            yref="y",
+            x0=interval_start,
+            x1=interval_stop,
+            y0=0,
+            y1=lane_top,
+            fillcolor="#90caf9",
+            opacity=0.3,
+            line_width=0,
+            layer="below",
+        )
+    if stimulus_intervals:
+        first_start, _ = stimulus_intervals[0]
+        figure.add_annotation(
+            xref="x",
+            yref="y",
+            x=first_start,
+            y=lane_top,
+            text="stimulus",
+            showarrow=False,
+            xanchor="left",
+            yanchor="bottom",
+            font={"size": 11, "color": "#2c6fbb"},
+        )
+    if timeline_start <= POINT_CLOUD_VOLUME_INDEX < timeline_stop:
+        figure.add_shape(
+            type="line",
+            xref="x",
+            yref="y",
+            x0=POINT_CLOUD_VOLUME_INDEX,
+            x1=POINT_CLOUD_VOLUME_INDEX,
+            y0=0,
+            y1=lane_top,
+            line={"color": "#616161", "width": 1, "dash": "dash"},
+            layer="below",
+        )
+        figure.add_annotation(
+            xref="x",
+            yref="y",
+            x=POINT_CLOUD_VOLUME_INDEX,
+            y=lane_top,
+            text="point cloud",
+            showarrow=False,
+            xanchor="left",
+            yanchor="bottom",
+            font={"size": 11, "color": "#616161"},
+        )
+
+    figure.update_layout(
+        template="plotly_white",
+        height=820,
+        hovermode="closest",
+        margin={"l": 60, "r": 40, "b": 40, "t": 80},
+    )
+
+    figure.update_scenes(
+        xaxis_title="X",
+        yaxis_title="Y",
+        zaxis_title="Z",
+        aspectmode="data",
+    )
+    figure.update_xaxes(
+        title_text="Volume index (time)",
+        range=[timeline_start, timeline_stop],
+        zeroline=False,
+        row=2,
+        col=1,
+    )
+    figure.update_yaxes(
+        tickvals=list(range(1, num_lanes + 1)),
+        ticktext=[name.rsplit("/", 1)[-1] for name in behavior_names],
+        range=[0, lane_top],
+        zeroline=False,
+        showgrid=False,
+        row=2,
+        col=1,
+    )
+
+    error_data = {
+        str(volume_index): error_trace_data(volume_index)
+        for volume_index in sorted(error_by_volume)
+        if timeline_start <= volume_index < timeline_stop
+    }
+    plot_html = figure.to_html(
+        include_plotlyjs=True,
+        full_html=False,
+        div_id="error-timeline-plot",
+        config={
+            "displaylogo": False,
+            "responsive": True,
+            "scrollZoom": True,
+            "doubleClick": "reset",
+        },
+    )
+    error_json = json.dumps(error_data, separators=(",", ":"))
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proofreading errors over time</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; color: #222; }}
+    #timeline-controls {{ padding: 0 5% 24px; }}
+    #timeline-controls label {{ display: flex; gap: 8px; align-items: baseline; }}
+    #volume-value {{ min-width: 5ch; font-weight: 700; }}
+    #error-count {{ color: #e53935; }}
+    #volume-slider {{ width: 100%; cursor: ew-resize; }}
+    .hint {{ margin-top: 4px; color: #666; font-size: 12px; }}
+  </style>
+</head>
+<body>
+{plot_html}
+<div id="timeline-controls">
+  <label for="volume-slider">
+    Volume <output id="volume-value">{initial_volume}</output>
+    <span id="error-count"></span>
+  </label>
+  <input id="volume-slider" type="range"
+         min="{timeline_start}" max="{volumes[-1]}" step="{TIMELINE_STEP}"
+         value="{initial_volume}" aria-label="Volume index">
+  <div class="hint">Drag to inspect errors; the point cloud stays fixed at volume {POINT_CLOUD_VOLUME_INDEX}.</div>
+</div>
+<script>
+(() => {{
+  const plot = document.getElementById("error-timeline-plot");
+  const slider = document.getElementById("volume-slider");
+  const valueOutput = document.getElementById("volume-value");
+  const errorCount = document.getElementById("error-count");
+  const errorsByVolume = {error_json};
+  const emptyErrors = {{x: [], y: [], z: [], customdata: []}};
+
+  function showVolume(volume) {{
+    const errors = errorsByVolume[String(volume)] || emptyErrors;
+    valueOutput.value = String(volume);
+    errorCount.textContent = `(${{errors.x.length}} erroneous neuron${{errors.x.length === 1 ? "" : "s"}})`;
+    Plotly.restyle(plot, {{
+      x: [errors.x],
+      y: [errors.y],
+      z: [errors.z],
+      customdata: [errors.customdata]
+    }}, [1]);
+    Plotly.restyle(plot, {{x: [[volume, volume]]}}, [2]);
+  }}
+
+  let pendingUpdate = null;
+  slider.addEventListener("input", () => {{
+    if (pendingUpdate !== null) cancelAnimationFrame(pendingUpdate);
+    pendingUpdate = requestAnimationFrame(() => {{
+      pendingUpdate = null;
+      showVolume(Number(slider.value));
+    }});
+  }});
+  plot.on("plotly_click", event => {{
+    const point = event.points && event.points[0];
+    if (!point || !point.xaxis || point.xaxis._id !== "x") return;
+    const step = Number(slider.step);
+    const snapped = Math.round((Number(point.x) - Number(slider.min)) / step) * step
+      + Number(slider.min);
+    slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), snapped)));
+    showVolume(Number(slider.value));
+  }});
+  showVolume(Number(slider.value));
+}})();
+</script>
+</body>
+</html>
+"""
+    path.write_text(html, encoding="utf-8")
+
+    total_errors = sum(len(ids) for ids in error_by_volume.values())
+    return {
+        "generated": True,
+        "path": path.name,
+        "plot_type": "3D point cloud error highlight over time with timeline",
+        "point_cloud_volume_index": POINT_CLOUD_VOLUME_INDEX,
+        "neurons_plotted": len(plotted_ids),
+        "timeline_volume_range": [timeline_start, timeline_stop],
+        "analyzed_volume_range": [start, stop],
+        "timeline_position_count": len(volumes),
+        "timeline_step": TIMELINE_STEP,
+        "playback_enabled": False,
+        "error_observations": total_errors,
+        "error_neurons": len(
+            {neuron_id for ids in error_by_volume.values() for neuron_id in ids}
+        ),
+        "stimulus_intervals": len(stimulus_intervals),
+        "behavior_lanes": behavior_names,
+        "behavior_interval_counts": {
+            name: len(clip_intervals(interval_datasets[name]))
+            for name in behavior_names
+        },
         "orientation": orientation,
     }
 
@@ -772,6 +1218,26 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             by_neuron[event.neuron_id][field] += 1
             by_volume[event.volume_index][field] += 1
 
+    by_neuron_errors: dict[int, int] = defaultdict(int)
+    error_neurons_by_volume: dict[int, set[int]] = defaultdict(set)
+    if raw_roi is not None:
+        for event in events:
+            if (
+                event.fields
+                and "center_zyx" in event.fields
+                and event.center_zyx is not None
+                and event.neuron_id < sidecar.raw_n
+                and _center_shift_error(
+                    raw_roi,
+                    sidecar,
+                    event.volume_index,
+                    event.neuron_id,
+                    event.center_zyx,
+                )
+            ):
+                by_neuron_errors[event.neuron_id] += 1
+                error_neurons_by_volume[event.volume_index].add(event.neuron_id)
+
     all_resize_ids = {
         patch.neuron_id
         for patch in patches
@@ -788,25 +1254,29 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
         global_size_ids - all_resize_ids
     ) & analyzed_id_set
 
+    deleted_ids = {
+        neuron_id
+        for neuron_id in neuron_ids
+        if neuron_id in sidecar.delete_all_ids
+    }
+    ordered_neuron_ids = sorted(
+        neuron_ids, key=lambda neuron_id: (neuron_id in deleted_ids, neuron_id)
+    )
     per_neuron: list[dict[str, Any]] = []
-    for neuron_id in list(neuron_ids) + sorted(sidecar.added_ids):
+    for neuron_id in ordered_neuron_ids:
         counts = by_neuron[neuron_id]
-        eligible = int(neuron_eligible[neuron_id]) if neuron_id < sidecar.raw_n else 0
+        eligible = int(neuron_eligible[neuron_id])
         moved = counts["center_zyx"]
-        resized = counts["size_zyx"]
+        errors = by_neuron_errors[neuron_id]
+        is_deleted = neuron_id in deleted_ids
         per_neuron.append(
             {
                 "neuron_id": neuron_id,
-                "identity_type": "raw" if neuron_id < sidecar.raw_n else "added",
-                "eligible_raw_observations": eligible,
-                "moved_observations": moved,
-                "resized_observations": resized,
-                "presence_changed_observations": counts["presence"],
-                "move_error_probability": _ratio(moved, eligible),
-                "inferred_position_accuracy": _accuracy(moved, eligible),
-                "has_move": moved > 0,
-                "has_any_resize_in_range": resized > 0,
-                "has_global_resize": neuron_id in global_resize_ids,
+                "volumes": eligible,
+                "moved": moved,
+                "if_resize": counts["size_zyx"] > 0,
+                "errors": errors,
+                "accuracy": None if is_deleted else _accuracy(errors, eligible),
             }
         )
 
@@ -826,6 +1296,14 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
                 "inferred_position_accuracy": _accuracy(moved, eligible),
             }
         )
+
+    volumes = [
+        {
+            "volume_index": volume_index,
+            "errors": len(error_neurons_by_volume[volume_index]),
+        }
+        for volume_index in range(start, stop)
+    ]
 
     modified: list[dict[str, Any]] = []
     for event in events:
@@ -857,6 +1335,7 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
     moved_total = event_count("center_zyx")
     resized_total = event_count("size_zyx")
     presence_total = event_count("presence")
+    error_total = sum(by_neuron_errors.values())
     eligible_total = int(volume_eligible.sum())
     moved_ids = {
         event.neuron_id
@@ -900,6 +1379,7 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
         "moved_observations": moved_total,
         "resized_observations": resized_total,
         "presence_changed_observations": presence_total,
+        "error_observations": error_total,
         "global_resize_neurons": len(global_resize_ids),
         "global_size_application_noop_neurons": len(global_size_noop_ids),
         "added_neurons": len(sidecar.added_ids),
@@ -916,7 +1396,8 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
         )
         rates = {
             "move_error_probability": _ratio(moved_total, eligible_total),
-            "inferred_position_accuracy": _accuracy(moved_total, eligible_total),
+            "error_rate": _ratio(error_total, eligible_total),
+            "inferred_position_accuracy": _accuracy(error_total, eligible_total),
             "raw_neurons_with_move_fraction": _ratio(
                 len(moved_ids), sidecar.raw_n
             ),
@@ -949,8 +1430,23 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             stop,
         )
 
+    if raw_roi is None:
+        timeline = {
+            "generated": False,
+            "reason": "A matching raw ROI NPY is required for 3D positions.",
+        }
+    else:
+        timeline = _write_error_timeline_html(
+            report_dir / "error_timeline.html",
+            sidecar,
+            raw_roi,
+            events,
+            start,
+            stop,
+        )
+
     summary = {
-        "report_schema_version": 3,
+        "report_schema_version": 4,
         "input": {
             "sidecar_path": str(sidecar.path.resolve()),
             "sidecar_schema_version": sidecar.schema_version,
@@ -970,8 +1466,13 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
         },
         "definitions": {
             "move": "final center_zyx differs from the raw ROI center",
+            "error": (
+                "center shift from the raw ROI beyond thresholds: |dx| > "
+                f"{ERROR_SHIFT_X}, |dy| > {ERROR_SHIFT_Y}, or |dz| > {ERROR_SHIFT_Z}"
+            ),
             "move_error_probability": "moved observations / eligible raw observations",
-            "inferred_position_accuracy": "1 - move_error_probability",
+            "error_rate": "error observations / eligible raw observations",
+            "inferred_position_accuracy": "1 - error_rate",
             "global_resize_neuron": (
                 "raw neuron with placement_size metadata and an effective "
                 "size_zyx change"
@@ -992,6 +1493,7 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             "retired_added": sorted(sidecar.retired_ids),
         },
         "visualization": error_map,
+        "timeline_visualization": timeline,
         "warnings": warnings,
     }
 
@@ -999,6 +1501,7 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    _write_csv(report_dir / "volumes.csv", volumes, list(volumes[0]))
     _write_csv(report_dir / "per_neuron.csv", per_neuron, list(per_neuron[0]))
     _write_csv(report_dir / "per_volume.csv", per_volume, list(per_volume[0]))
     _write_csv(
@@ -1046,24 +1549,24 @@ def analyze_sidecar(sidecar_path: Path, raw_roi_path: Path | None) -> Path:
             "the sidecar"
         )
         for row in per_neuron:
-            if row["identity_type"] != "raw":
-                continue
-            accuracy = row["inferred_position_accuracy"]
+            accuracy = row["accuracy"]
             accuracy_text = (
                 "n/a" if accuracy is None else f"{100 * accuracy:.4f}%"
             )
             print(
-                f"  ID {row['neuron_id']}: moved="
-                f"{row['moved_observations']}/"
-                f"{row['eligible_raw_observations']}; "
-                f"position accuracy={accuracy_text}; "
-                f"global resize={row['has_global_resize']}"
+                f"  ID {row['neuron_id']}: moved={row['moved']}/"
+                f"{row['volumes']}; errors={row['errors']}; "
+                f"accuracy={accuracy_text}; resize={row['if_resize']}"
             )
     print(f"  report={summary_path}")
     if error_map["generated"]:
         print(f"  2D error map={report_dir / error_map['path']}")
     else:
         print(f"  2D error map skipped: {error_map['reason']}")
+    if timeline["generated"]:
+        print(f"  error timeline={report_dir / timeline['path']}")
+    else:
+        print(f"  error timeline skipped: {timeline['reason']}")
     return summary_path
 
 
