@@ -104,6 +104,7 @@ Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the 
 | Mode | Image loading | ROI loading | Persistent output |
 | ---- | ------------- | ----------- | ----------------- |
 | `npy` | Opens `volumes.npy` with read-only memory mapping | The plugin opens the existing ROI NPY | None |
+| `tiff` | Lazily decompresses complete `(Z,Y,X)` volumes and caches recent volumes in RAM; napari sees `(1,1,Y,X)` chunks | The plugin opens the existing ROI NPY | None |
 | `raw-eager` | Reads and transforms every selected TIFF plane at startup | Reads and transforms ROI data in memory | None |
 | `raw-virtual` | Builds a plane-chunked Dask array and reads TIFF data on demand | Reads and transforms ROI data in memory | None |
 
@@ -124,6 +125,9 @@ The main dataset-specific settings are located near the top of `script/launch_da
 SOURCE_MODE = "npy"
 
 DATA_DIR = Path("/path/to/dataset")
+TIFF_STACK_PATH = DATA_DIR / "volumes.tif"
+TIFF_VOLUME_CACHE_SIZE = 3
+TIFF_DECODE_WORKERS = 4
 ROI_PATH = DATA_DIR / "neuron_point_tuple.npy"  # or None
 
 # Used by raw-eager and raw-virtual modes.
@@ -140,9 +144,12 @@ IMAGE_CONTRAST_LIMITS = (102, 400)
 
 | Parameter               | Meaning                                                                      |
 | ----------------------- | ---------------------------------------------------------------------------- |
-| `SOURCE_MODE`           | `npy`, `raw-eager`, or `raw-virtual`                                          |
-| `DATA_DIR`              | Directory containing the required NPY files in `npy` mode                     |
-| `ROI_PATH`              | Optional ROI NPY path in `npy` mode; use `None` for image-only viewing         |
+| `SOURCE_MODE`           | `npy`, `tiff`, `raw-eager`, or `raw-virtual`                                  |
+| `DATA_DIR`              | Directory containing prepared NPY or TIFF files                               |
+| `TIFF_STACK_PATH`       | Compressed `(T,Z,Y,X)` TIFF stack used in `tiff` mode                          |
+| `TIFF_VOLUME_CACHE_SIZE` | Number of decompressed `(Z,Y,X)` volumes retained in RAM                       |
+| `TIFF_DECODE_WORKERS`   | Threads used to decode the compressed pages of one requested volume            |
+| `ROI_PATH`              | Optional ROI NPY path in either prepared mode; use `None` for image-only viewing |
 | `TIFF_PATH`             | Numbered TIFF directory or multi-page stack used by both raw modes            |
 | `RAW_ROI_SOURCE_MODE`   | `dynamics` or `realtime-results`                                               |
 | `RAW_ROI_SOURCE_PATH`   | A dynamics HDF5 file or realtime-results directory used by both raw modes      |
@@ -181,10 +188,10 @@ Raw ROI data is transformed eagerly and written to a temporary NPY for the plugi
 
 ## What happens at startup
 
-In `npy` mode, the launcher:
+In either prepared mode, the launcher:
 
-1. Checks that `volumes.npy` exists and, when `ROI_PATH` is not `None`, checks the ROI file.
-2. Opens the Image array using read-only NumPy memory mapping.
+1. Checks that the configured Image exists and, when `ROI_PATH` is not `None`, checks the ROI file.
+2. Opens NPY with read-only memory mapping or TIFF as a lazy Dask array. TIFF mode reads all Z pages of a requested time point in one file-open operation and caches the most recently used volumes in RAM.
 3. When ROI is enabled, verifies that its time dimension matches the Image.
 4. When ROI is enabled, applies the configured `Z_DIVISOR` while loading it.
 5. When `LABELS_PATH` is not `None`, opens that Labels file and verifies that it is an integer array matching the Image shape.
@@ -287,7 +294,7 @@ python script/launch_datasets.py
 
 ### Dataset files were not found
 
-Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy`. When `ROI_PATH` or `LABELS_PATH` is not `None`, confirm that it points to an existing ROI or Labels NPY respectively. Check path spelling and use a raw string for Windows paths:
+Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy` or `volumes.tif`, as appropriate for `SOURCE_MODE`. When `ROI_PATH` or `LABELS_PATH` is not `None`, confirm that it points to an existing ROI or Labels NPY respectively. Check path spelling and use a raw string for Windows paths:
 
 ```python
 DATA_DIR = Path(r"D:\data\worm_dataset")
