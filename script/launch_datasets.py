@@ -1,4 +1,4 @@
-"""Open exported NPY/TIFF or raw datasets with Worm Neuron Annotator."""
+"""Open prepared NPY/TIFF/HDF5 or raw datasets with Worm Neuron Annotator."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from threading import Lock
 from typing import Literal
 
 import dask.array as da
+import h5py
+import hdf5plugin  # Registers Zstd and other HDF5 compression filters.
 import napari
 import numpy as np
 import tifffile
@@ -20,25 +22,31 @@ APP_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = APP_DIR.parent
 PREPROCESS_DIR = REPOSITORY_DIR / "preprocess"
 
-SourceMode = Literal["npy", "tiff", "raw-eager", "raw-virtual"]
+SourceMode = Literal["npy", "tiff", "hdf5", "raw-eager", "raw-virtual"]
 
-# Choose "npy", "tiff", "raw-eager", or "raw-virtual".
+# Choose "npy", "tiff", "hdf5", "raw-eager", or "raw-virtual".
 SOURCE_MODE: SourceMode = "tiff"
 
 # ---------------------------------------------------------------------------
-# Prepared NPY or compressed TIFF source
+# Prepared NPY, compressed TIFF, or HDF5 source
 # ---------------------------------------------------------------------------
 
 DATA_DIR = Path(
-    r"/path/to/data"
+    r"data\20260304_w3\images"
 )
 IMAGE_PATH = DATA_DIR / "volumes.npy"
 TIFF_STACK_PATH = DATA_DIR / "volumes.tif"
+HDF5_PATH = DATA_DIR / "volumes.h5"
+HDF5_DATASET = "volumes"
+# Native HDF5 decompressed-chunk cache. Existing images.h5 files may store a
+# complete volume per chunk; 128 MiB also fits several uint16 20x1024x1024 chunks.
+HDF5_CHUNK_CACHE_MIB = 128
 # Number of decompressed (Z,Y,X) volumes retained in RAM in TIFF mode.
 TIFF_VOLUME_CACHE_SIZE = 3
 # Worker threads used to decode the compressed pages of one volume.
 TIFF_DECODE_WORKERS = 4
-# Used by both prepared modes. Set to None to open without ROI data.
+# Used by all prepared modes. Set to None to open without ROI data. A shorter
+# ROI time axis is padded with NaN; a longer one is truncated for this session.
 ROI_PATH: Path | None = DATA_DIR / "neuron_point_tuple.npy"
 # ROI_PATH: Path | None = Path(r"data\20260304_w3\neuron_pt_tuple_corrected_wjh.npy")
 
@@ -93,21 +101,85 @@ def _check_file(path: Path, description: str) -> None:
         raise FileNotFoundError(f"{description} does not exist: {path}")
 
 
-def _load_npy_inputs() -> tuple[np.ndarray, Path | None]:
+def _load_npy_inputs(temporary_dir: TemporaryDirectory) -> tuple[np.ndarray, Path | None]:
     _check_file(IMAGE_PATH, "Image NPY")
     volumes = np.load(IMAGE_PATH, mmap_mode="r", allow_pickle=False)
-    return volumes, _load_prepared_roi(volumes)
+    return volumes, _load_prepared_roi(volumes, temporary_dir)
 
 
-def _load_prepared_roi(volumes) -> Path | None:
+def _load_prepared_roi(volumes, temporary_dir: TemporaryDirectory) -> Path | None:
     if ROI_PATH is None:
         _validate_image_and_roi(volumes, None)
         return None
 
     _check_file(ROI_PATH, "ROI NPY")
     roi = np.load(ROI_PATH, mmap_mode="r", allow_pickle=False)
-    _validate_image_and_roi(volumes, roi)
-    return ROI_PATH
+    try:
+        _validate_image_and_roi(volumes, roi, check_time=False)
+        image_t = int(volumes.shape[0])
+        roi_t = int(roi.shape[0])
+        if roi_t == image_t:
+            return ROI_PATH
+
+        roi_path = _write_session_roi(temporary_dir, roi, time_count=image_t)
+        adjustment = (
+            f"padded {image_t - roi_t} trailing volumes with NaN"
+            if roi_t < image_t
+            else f"truncated {roi_t - image_t} trailing volumes"
+        )
+        print(f"ROI time axis:   {roi_t} -> {image_t}; {adjustment}")
+        return roi_path
+    finally:
+        roi._mmap.close()
+
+
+def _load_hdf5_inputs(
+    temporary_dir: TemporaryDirectory,
+) -> tuple[da.Array, Path | None, h5py.File]:
+    """Load a plane-chunked Image while keeping HDF5 open for the session."""
+
+    _check_file(HDF5_PATH, "Image HDF5")
+    if HDF5_CHUNK_CACHE_MIB < 1:
+        raise ValueError("HDF5_CHUNK_CACHE_MIB must be at least 1")
+    source = h5py.File(
+        HDF5_PATH,
+        "r",
+        rdcc_nbytes=HDF5_CHUNK_CACHE_MIB * 1024**2,
+    )
+    try:
+        if HDF5_DATASET not in source:
+            raise KeyError(f"HDF5 Image dataset {HDF5_DATASET!r} does not exist")
+        images = source[HDF5_DATASET]
+        if not isinstance(images, h5py.Dataset):
+            raise TypeError(f"HDF5 Image key {HDF5_DATASET!r} must be a dataset")
+        _validate_image_and_roi(images, None)
+        if any(size == 0 for size in images.shape):
+            raise ValueError("Expected a non-empty (T,Z,Y,X) Image dataset")
+        axes = images.attrs.get("axes", "TZYX")
+        if isinstance(axes, bytes):
+            axes = axes.decode("ascii")
+        if axes != "TZYX":
+            raise ValueError(f"Expected HDF5 Image axes TZYX, got {axes!r}")
+        volumes = da.from_array(
+            images,
+            chunks=(1, 1, *images.shape[2:]),
+            asarray=False,
+            fancy=False,
+            lock=Lock(),
+        )
+        roi_path = _load_prepared_roi(volumes, temporary_dir)
+        print(
+            f"HDF5 Image:      {HDF5_PATH}  dataset={HDF5_DATASET}  "
+            f"shape={images.shape}  dtype={images.dtype}"
+        )
+        print(
+            f"HDF5 chunks:     {images.chunks}  "
+            f"cache={HDF5_CHUNK_CACHE_MIB} MiB"
+        )
+        return volumes, roi_path, source
+    except Exception:
+        source.close()
+        raise
 
 
 def _clear_tiff_volume_cache() -> None:
@@ -254,7 +326,7 @@ class _TiffStackBackend:
         )
 
 
-def _load_tiff_inputs() -> tuple[da.Array, Path | None]:
+def _load_tiff_inputs(temporary_dir: TemporaryDirectory) -> tuple[da.Array, Path | None]:
     """Open a compressed TIFF with lazy per-volume decompression and caching."""
 
     _check_file(TIFF_STACK_PATH, "Image TIFF stack")
@@ -306,7 +378,7 @@ def _load_tiff_inputs() -> tuple[da.Array, Path | None]:
     )
     print(f"TIFF decoding:   {TIFF_DECODE_WORKERS} workers per volume")
     _validate_image_and_roi(volumes, None)
-    return volumes, _load_prepared_roi(volumes)
+    return volumes, _load_prepared_roi(volumes, temporary_dir)
 
 
 def _enable_raw_loader_imports() -> None:
@@ -354,21 +426,51 @@ def _load_raw_inputs(mode: SourceMode):
     return dataset
 
 
-def _validate_image_and_roi(volumes, roi: np.ndarray | None) -> None:
+def _validate_image_and_roi(
+    volumes, roi: np.ndarray | None, *, check_time: bool = True
+) -> None:
     if volumes.ndim != 4:
         raise ValueError("Expected a (T,Z,Y,X) Image array")
     if roi is None:
         return
     if roi.ndim != 3 or roi.shape[2] < 6:
         raise ValueError("Expected a (T,N,K>=6) ROI array")
-    if roi.shape[0] != volumes.shape[0]:
+    if not np.issubdtype(roi.dtype, np.number):
+        raise TypeError("Expected a numeric ROI array")
+    if check_time and roi.shape[0] != volumes.shape[0]:
         raise ValueError("ROI time dimension must match the Image time dimension")
 
 
-def _write_session_roi(temporary_dir: TemporaryDirectory, roi: np.ndarray) -> Path:
+def _write_session_roi(
+    temporary_dir: TemporaryDirectory,
+    roi: np.ndarray,
+    time_count: int | None = None,
+) -> Path:
     roi_path = Path(temporary_dir.name) / "neuron_point_tuple.npy"
-    with roi_path.open("wb") as output_file:
-        np.save(output_file, roi)
+    if time_count is None or time_count == roi.shape[0]:
+        with roi_path.open("wb") as output_file:
+            np.save(output_file, roi, allow_pickle=False)
+        return roi_path
+
+    # Memory-map the session copy to avoid allocating a second complete ROI
+    # array. Integer inputs are promoted only when NaN padding is needed.
+    dtype = roi.dtype
+    if time_count > roi.shape[0] and not np.issubdtype(dtype, np.inexact):
+        dtype = np.result_type(dtype, np.float32)
+    output = np.lib.format.open_memmap(
+        roi_path,
+        mode="w+",
+        dtype=dtype,
+        shape=(time_count, *roi.shape[1:]),
+    )
+    try:
+        retained_count = min(time_count, roi.shape[0])
+        output[:retained_count] = roi[:retained_count]
+        if retained_count < time_count:
+            output[retained_count:] = np.nan
+        output.flush()
+    finally:
+        output._mmap.close()
     return roi_path
 
 
@@ -390,32 +492,34 @@ def _add_optional_labels(viewer: napari.Viewer, volumes):
 
 
 def main() -> None:
-    if SOURCE_MODE not in ("npy", "tiff", "raw-eager", "raw-virtual"):
+    if SOURCE_MODE not in ("npy", "tiff", "hdf5", "raw-eager", "raw-virtual"):
         raise ValueError(
-            "SOURCE_MODE must be 'npy', 'tiff', 'raw-eager', or 'raw-virtual'"
+            "SOURCE_MODE must be 'npy', 'tiff', 'hdf5', 'raw-eager', or 'raw-virtual'"
         )
 
     temporary_dir: TemporaryDirectory | None = None
+    hdf5_file: h5py.File | None = None
     widget = None
     viewer = None
     try:
+        temporary_dir = TemporaryDirectory(prefix="worm-neuron-roi-")
         if SOURCE_MODE == "npy":
-            volumes, roi_path = _load_npy_inputs()
+            volumes, roi_path = _load_npy_inputs(temporary_dir)
         elif SOURCE_MODE == "tiff":
-            volumes, roi_path = _load_tiff_inputs()
+            volumes, roi_path = _load_tiff_inputs(temporary_dir)
+        elif SOURCE_MODE == "hdf5":
+            volumes, roi_path, hdf5_file = _load_hdf5_inputs(temporary_dir)
         else:
             dataset = _load_raw_inputs(SOURCE_MODE)
             volumes = dataset.volumes
-            temporary_dir = TemporaryDirectory(prefix="worm-neuron-roi-")
             roi_path = _write_session_roi(temporary_dir, dataset.roi)
 
         viewer = napari.Viewer()
         image_layer = viewer.add_image(
             volumes,
             name="volumes",
-            # The bounded TIFF volume cache is sufficient. Dask otherwise
-            # retains a second, much larger cache of displayed slices.
-            cache=SOURCE_MODE != "tiff",
+            # TIFF and HDF5 already have bounded decompressed-data caches.
+            cache=SOURCE_MODE not in ("tiff", "hdf5"),
             scale=LAYER_SCALE_TZYX,
             axis_labels=("t", "z", "y", "x"),
             contrast_limits=IMAGE_CONTRAST_LIMITS,
@@ -440,7 +544,7 @@ def main() -> None:
                 widget.labels_combo.setCurrentIndex(labels_index)
         widget.z_divisor_spin.setValue(Z_DIVISOR)
         if roi_path is not None:
-        widget.load_roi_path(roi_path)
+            widget.load_roi_path(roi_path)
 
         if widget.active_id is not None:
             widget.activate_id(widget.active_id, locate=True)
@@ -450,10 +554,12 @@ def main() -> None:
     finally:
         if SOURCE_MODE == "tiff":
             _clear_tiff_volume_cache()
+        if hdf5_file is not None:
+            hdf5_file.close()
         if temporary_dir is not None:
             if widget is not None and widget.roi_dataset is not None:
                 try:
-                    widget.unload_roi()
+                    widget.unload_roi(force=True)
                 except RuntimeError:
                     pass
             widget = None

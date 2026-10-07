@@ -11,7 +11,7 @@ The launcher script `launch_datasets.py` creates and docks the plugin automatica
 ## Prerequisites
 
 - [Pixi](https://pixi.sh/latest/installation/). Pixi installs the locked Python, napari, Qt, plugin, TIFF, HDF5, and Dask dependencies.
-- One data source: either a prepared NPY dataset or the original TIFF data plus one ROI source. The ROI source can be a `dynamics.h5` file or a realtime-results directory containing `volume_XXXXXXXX.h5` files. The Labels file is optional in both cases.
+- One data source: a prepared NPY, TIFF, or HDF5 dataset, or the original TIFF data plus one ROI source. The ROI source can be a `dynamics.h5` file or a realtime-results directory containing `volume_XXXXXXXX.h5` files. The Labels file is optional.
 
 A prepared dataset has this layout:
 
@@ -82,6 +82,60 @@ pixi run preprocess
 
 Point Z coordinates and depths retain their scaled source units. Set the launcher `Z_DIVISOR` to the same value as the preprocessing `Z_SCALE_RATIO` so ROI Z values map to the correct image slices.
 
+## Export only source ROI points
+
+Configure `preprocess/export_roi_to_npy.py`, then run:
+
+```bash
+pixi run preprocess-roi
+```
+
+```python
+RAW_ROI_SOURCE_MODE = "realtime-results"  # or "dynamics"
+RAW_ROI_SOURCE_PATH = Path("/path/to/realtime-results")  # or dynamics.h5
+OUTPUT_DIR = Path("data/20260923_w1")
+SELECTED_VOLUMES = None  # or []; automatically select all source volumes
+DYNAMICS_FIRST_VOLUME = 0  # fallback numbering for nonnumeric dynamics groups
+```
+
+This standalone script writes only `neuron_point_tuple.npy`, a `(T,N,K>=6)` float32 array. It loads no images and preserves the source point columns and coordinate units without PCA, alignment, flips, Z reversal, cropping, coordinate reordering, or rescaling. Dynamics mode reads the supported point datasets directly and does not require `center` or `rot` fields.
+
+For realtime results, output row `i` represents neuron ID `i`. Missing volume files, analysis groups, point datasets, and missing neurons produce NaN rows. `SELECTED_VOLUMES = None` or an empty sequence automatically selects `range(0, maximum_file_volume + 1)`, including missing leading and intermediate volumes. Dynamics mode automatically selects all available point groups in natural order, preserving numeric source IDs or applying `DYNAMICS_FIRST_VOLUME` to nonnumeric names.
+
+An explicit `SELECTED_VOLUMES` sequence defines the output time axis in the exact requested order. Use the complete expected Image volume range, such as `list(range(7918))`, to include missing realtime volumes after the last file; their extent cannot be inferred from the ROI source alone. The reader needs at least one valid source frame to infer the neuron and feature dimensions, even if that frame is outside the selected range. No missing coordinates are interpolated. Missing requested dynamics volumes raise an error.
+
+Existing ROI output files are never overwritten. Set the launcher's `ROI_PATH` to the exported NPY. When its time length differs from the Image, the launcher pads missing trailing volumes with NaN or truncates excess trailing volumes in a session-only NPY. Source coordinates must match the Image geometry and time order; this exporter does not compensate for image flips, rotations, or Z offsets. The launcher still uses `Z_DIVISOR` to interpret the unchanged source Z/depth units.
+
+## Export a foreground-masked HDF5 dataset
+
+Configure `preprocess/export_dataset_to_h5.py`, then run:
+
+```bash
+pixi run preprocess-h5
+```
+
+Set `TIFF_PATH`, `SELECTED_VOLUMES`, and `OUTPUT_DIR` near the top of the script. The output is `OUTPUT_DIR / "images.h5"`, with a `volumes` dataset containing `(T,Z,Y,X)` float32 images. One time point is one complete volume, assembled using `FRAMES_PER_VOLUME` and the inclusive `Z_START_FRAME`/`Z_END_FRAME` offsets. The defaults retain offsets `0..17` from each group of 20 acquired frames, matching the TIFF exporter; set `Z_END_FRAME = 19` to retain all 20 layers.
+
+In this HDF5 exporter, `SELECTED_VOLUMES = None` or an empty sequence automatically selects `range(number_of_TIFF_frames // FRAMES_PER_VOLUME)`. Frame counts come from filenames or TIFF page metadata without loading image pixels. A numbered TIFF directory must have consecutive frame numbers starting at zero for automatic selection. An incomplete trailing acquisition volume is skipped with a message. A nonempty sequence preserves the explicitly requested volume order. The retained Z range does not change how acquisition volumes are counted.
+
+The HDF5 and TIFF exporters share the same foreground algorithm. `FOREGROUND_MODE = "image"` thresholds each volume's XY maximum-intensity projection, expands and closes its mask, and applies the same XY mask to every Z layer. `"roi"` uses projected ROI boxes; `"auto"` selects ROI masking when an ROI source is configured. The complete XY canvas is retained, with original float32 intensities inside the mask and zero background. This foreground mask does not encode neuron identity.
+
+Images are streamed into `(1,1,Y,X)` chunks with lossless Zstd compression; no complete time series is loaded into RAM. Pixi includes `hdf5plugin` to read and write the Zstd filter used by existing `images.h5` files. Optional ROI sources use the same settings and geometry as the TIFF exporter and produce a separate `neuron_point_tuple.npy`. Leave both `ROI_SOURCE_MODE` and `ROI_SOURCE_PATH` as `None` for image-only export.
+
+Existing output files are never overwritten. For example, if `data/20260923_w1/images.h5` already exists, choose a fresh directory such as `data/20260923_w1_masked` for the masked export. Raw data remains unchanged.
+
+To view an existing image-only HDF5 dataset, configure the launcher:
+
+```python
+SOURCE_MODE = "hdf5"
+DATA_DIR = Path("data/20260923_w1")
+HDF5_PATH = DATA_DIR / "images.h5"
+HDF5_DATASET = "volumes"
+ROI_PATH = None
+```
+
+For an export that includes ROIs, set `ROI_PATH = DATA_DIR / "neuron_point_tuple.npy"` and keep `Z_DIVISOR` equal to the exporter's `Z_SCALE_RATIO`.
+
 ## Quick start
 
 ### 1. Clone the repository
@@ -105,6 +159,7 @@ Open `script/launch_datasets.py` and choose a `SOURCE_MODE` near the top of the 
 | ---- | ------------- | ----------- | ----------------- |
 | `npy` | Opens `volumes.npy` with read-only memory mapping | The plugin opens the existing ROI NPY | None |
 | `tiff` | Lazily decompresses complete `(Z,Y,X)` volumes and caches recent volumes in RAM; napari sees `(1,1,Y,X)` chunks | The plugin opens the existing ROI NPY | None |
+| `hdf5` | Reads `images.h5` on demand in `(1,1,Y,X)` Dask chunks with a bounded native HDF5 decompression cache | The plugin opens the existing ROI NPY when configured | None |
 | `raw-eager` | Reads and transforms every selected TIFF plane at startup | Reads and transforms ROI data in memory | None |
 | `raw-virtual` | Builds a plane-chunked Dask array and reads TIFF data on demand | Reads and transforms ROI data in memory | None |
 
@@ -126,6 +181,9 @@ SOURCE_MODE = "npy"
 
 DATA_DIR = Path("/path/to/dataset")
 TIFF_STACK_PATH = DATA_DIR / "volumes.tif"
+HDF5_PATH = DATA_DIR / "images.h5"
+HDF5_DATASET = "volumes"
+HDF5_CHUNK_CACHE_MIB = 128
 TIFF_VOLUME_CACHE_SIZE = 3
 TIFF_DECODE_WORKERS = 4
 ROI_PATH = DATA_DIR / "neuron_point_tuple.npy"  # or None
@@ -144,12 +202,15 @@ IMAGE_CONTRAST_LIMITS = (102, 400)
 
 | Parameter               | Meaning                                                                      |
 | ----------------------- | ---------------------------------------------------------------------------- |
-| `SOURCE_MODE`           | `npy`, `tiff`, `raw-eager`, or `raw-virtual`                                  |
-| `DATA_DIR`              | Directory containing prepared NPY or TIFF files                               |
+| `SOURCE_MODE`           | `npy`, `tiff`, `hdf5`, `raw-eager`, or `raw-virtual`                            |
+| `DATA_DIR`              | Directory containing prepared NPY, TIFF, or HDF5 files                         |
 | `TIFF_STACK_PATH`       | Compressed `(T,Z,Y,X)` TIFF stack used in `tiff` mode                          |
+| `HDF5_PATH`             | HDF5 file used in `hdf5` mode                                                 |
+| `HDF5_DATASET`          | HDF5 Image dataset key; defaults to `volumes` in `(T,Z,Y,X)` order             |
+| `HDF5_CHUNK_CACHE_MIB`  | Native HDF5 decompressed-chunk cache limit in MiB                             |
 | `TIFF_VOLUME_CACHE_SIZE` | Number of decompressed `(Z,Y,X)` volumes retained in RAM                       |
 | `TIFF_DECODE_WORKERS`   | Threads used to decode the compressed pages of one requested volume            |
-| `ROI_PATH`              | Optional ROI NPY path in either prepared mode; use `None` for image-only viewing |
+| `ROI_PATH`              | Optional ROI NPY path in any prepared mode; use `None` for image-only viewing |
 | `TIFF_PATH`             | Numbered TIFF directory or multi-page stack used by both raw modes            |
 | `RAW_ROI_SOURCE_MODE`   | `dynamics` or `realtime-results`                                               |
 | `RAW_ROI_SOURCE_PATH`   | A dynamics HDF5 file or realtime-results directory used by both raw modes      |
@@ -186,13 +247,15 @@ In both raw modes, `Z_DIVISOR` must equal `Z_SCALE_RATIO`. A TIFF directory must
 
 Raw ROI data is transformed eagerly and written to a temporary NPY for the plugin's path-based loader. The launcher keeps this file for the napari session, calls `unload_roi()` when the viewer closes, and then removes the temporary directory. This avoids deleting a file while the plugin still holds a read-only memory map.
 
+Prepared ROI files with a different time length also use a session-only NPY: a shorter ROI is padded with NaN at the end, and a longer ROI is truncated to the Image time count. Matching files are opened directly. This applies to `npy`, `tiff`, and `hdf5` modes, preserves the shared time interval and every point column, and leaves the original ROI file unchanged. Only the tail is adjusted; image and ROI indices must already refer to the same volumes. Temporary copies are memory-mapped during preparation and kept alive until the annotator releases them at session end.
+
 ## What happens at startup
 
-In either prepared mode, the launcher:
+In any prepared mode, the launcher:
 
 1. Checks that the configured Image exists and, when `ROI_PATH` is not `None`, checks the ROI file.
-2. Opens NPY with read-only memory mapping or TIFF as a lazy Dask array. TIFF mode reads all Z pages of a requested time point in one file-open operation and caches the most recently used volumes in RAM.
-3. When ROI is enabled, verifies that its time dimension matches the Image.
+2. Opens NPY with read-only memory mapping, or TIFF/HDF5 as a lazy Dask array. TIFF mode caches recently viewed volumes. HDF5 mode keeps the read-only file open for the napari session, caches decompressed storage chunks within `HDF5_CHUNK_CACHE_MIB`, and closes the file when the session ends.
+3. When ROI is enabled, validates its shape and matches its time length to the Image, padding trailing gaps with NaN or truncating excess trailing volumes in a temporary NPY.
 4. When ROI is enabled, applies the configured `Z_DIVISOR` while loading it.
 5. When `LABELS_PATH` is not `None`, opens that Labels file and verifies that it is an integer array matching the Image shape.
 6. Creates the napari viewer and adds the Image and optional Labels layers.
@@ -279,7 +342,7 @@ python script/launch_datasets.py
 Install the raw-data dependencies before running the TIFF/ROI converter or either raw launcher mode without Pixi:
 
 ```bash
-pip install "dask[array]" h5py scipy tifffile
+pip install "dask[array]" h5py hdf5plugin scipy tifffile
 python preprocess/export_dataset_to_npy.py
 ```
 
@@ -294,7 +357,7 @@ python script/launch_datasets.py
 
 ### Dataset files were not found
 
-Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy` or `volumes.tif`, as appropriate for `SOURCE_MODE`. When `ROI_PATH` or `LABELS_PATH` is not `None`, confirm that it points to an existing ROI or Labels NPY respectively. Check path spelling and use a raw string for Windows paths:
+Confirm that `DATA_DIR` points directly to the directory containing `volumes.npy`, `volumes.tif`, or `images.h5`, as appropriate for `SOURCE_MODE`. When `ROI_PATH` or `LABELS_PATH` is not `None`, confirm that it points to an existing ROI or Labels NPY respectively. Check path spelling and use a raw string for Windows paths:
 
 ```python
 DATA_DIR = Path(r"D:\data\worm_dataset")

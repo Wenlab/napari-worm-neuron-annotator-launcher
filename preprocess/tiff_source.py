@@ -34,6 +34,21 @@ class TiffFrameSource:
         if self._stack is not None:
             self._stack.close()
 
+    @property
+    def frame_count(self) -> int:
+        """Count source frames without decoding pixels; directory IDs start at zero."""
+
+        if self._stack is not None:
+            return len(self._stack.pages)
+        self._index_directory()
+        count = max(self._frame_paths) + 1
+        if min(self._frame_paths) != 0 or len(self._frame_paths) != count:
+            raise ValueError(
+                "Automatic volume selection requires consecutive TIFF frame "
+                f"numbers starting at 0 in {self.path}"
+            )
+        return count
+
     def _index_directory(self) -> None:
         if self._directory_indexed:
             return

@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-import h5py
+import openpyxl
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -548,6 +548,36 @@ def _orient_point_cloud_xy(centers_xyz: np.ndarray) -> tuple[np.ndarray, dict[st
     }
 
 
+# Error-rate buckets for the 2D error map. Each bucket is drawn as a single
+# flat, high-contrast color so adjacent bands are easy to tell apart. The width
+# is fixed at ERROR_RATE_BUCKET_STEP; the number of buckets (and thus the top
+# of the scale) adapts to the maximum observed error rate, so the palette is
+# never stretched to a fixed 90-100% when the data tops out earlier.
+ERROR_RATE_BUCKET_STEP = 0.1
+_ERROR_RATE_BUCKET_COLORS: tuple[str, ...] = (
+    "#1b9e77",  # 0-10%
+    "#66c2a5",  # 10-20%
+    "#a6d854",  # 20-30%
+    "#fee08b",  # 30-40%
+    "#fdae61",  # 40-50%
+    "#f46d43",  # 50-60%
+    "#d73027",  # 60-70%
+    "#a50026",  # 70-80%
+    "#7a0177",  # 80-90%
+    "#40004b",  # 90-100%
+)
+
+
+def _discrete_colorscale(colors: tuple[str, ...]) -> list[list[float | str]]:
+    """Return a step colorscale with one flat color per equal-width bucket."""
+    count = len(colors)
+    return [
+        entry
+        for index, color in enumerate(colors)
+        for entry in ([index / count, color], [(index + 1) / count, color])
+    ]
+
+
 def _write_error_map_2d_html(
     path: Path,
     sidecar: Sidecar,
@@ -611,16 +641,21 @@ def _write_error_map_2d_html(
         or 0.0
         for neuron_id in reviewed_plotted
     ]
-    if reviewed_rates:
-        color_min = min(reviewed_rates)
-        color_max = max(reviewed_rates)
-        if math.isclose(color_min, color_max):
-            color_min = max(0.0, color_min - 0.005)
-            color_max = min(1.0, color_max + 0.005)
-            if math.isclose(color_min, color_max):
-                color_max = color_min + 0.01
-    else:
-        color_min, color_max = 0.0, 1.0
+    color_max = max(reviewed_rates) if reviewed_rates else 0.0
+    color_max = min(color_max, 1.0)
+    bucket_count = max(
+        1, int(math.ceil(color_max / ERROR_RATE_BUCKET_STEP - 1e-9))
+    )
+    bucket_colors = _ERROR_RATE_BUCKET_COLORS[:bucket_count]
+    bucket_midpoints = [
+        (index + 0.5) * ERROR_RATE_BUCKET_STEP for index in range(bucket_count)
+    ]
+    bucket_labels = [
+        f"{round(index * ERROR_RATE_BUCKET_STEP * 100)}–"
+        f"{round((index + 1) * ERROR_RATE_BUCKET_STEP * 100)}%"
+        for index in range(bucket_count)
+    ]
+    color_ceiling = round(bucket_count * ERROR_RATE_BUCKET_STEP, 6)
     reviewed_hover = [
         [
             neuron_id,
@@ -683,14 +718,16 @@ def _write_error_map_2d_html(
                     marker={
                         "size": REVIEWED_POINT_SIZE,
                         "color": reviewed_rates,
-                        "colorscale": "Viridis",
-                        "cmin": color_min,
-                        "cmax": color_max,
+                        "colorscale": _discrete_colorscale(bucket_colors),
+                        "cmin": 0.0,
+                        "cmax": color_ceiling,
                         "showscale": projection_index == 2,
                         "colorbar": {
                             "title": "Error rate",
-                            "tickformat": ".0%",
                             "x": 1.02,
+                            "tickvals": bucket_midpoints,
+                            "ticktext": bucket_labels,
+                            "tickmode": "array",
                         },
                         "line": {"color": "#202020", "width": 0.25},
                     },
@@ -786,8 +823,12 @@ def _write_error_map_2d_html(
         "point_cloud_volume_index": POINT_CLOUD_VOLUME_INDEX,
         "z_coordinate_units": "raw neuron_point_tuple.npy scaled Z",
         "color_definition": "error observations / eligible raw observations",
-        "color_range": [color_min, color_max],
-        "color_range_source": "observed reviewed-neuron error-rate range",
+        "color_range": [0.0, color_ceiling],
+        "color_range_source": (
+            f"{round(ERROR_RATE_BUCKET_STEP * 100)}% error-rate buckets "
+            "truncated at the observed maximum, one flat color each"
+        ),
+        "color_buckets": bucket_labels,
         "marker_sizes": {
             "reviewed": REVIEWED_POINT_SIZE,
             "unreviewed": UNREVIEWED_POINT_SIZE,
@@ -808,21 +849,34 @@ _BEHAVIOR_LANE_COLORS = (
 )
 
 
-def _load_interval_datasets(path: Path | None) -> dict[str, np.ndarray]:
-    """Load (start, duration) interval datasets from an optional H5 file."""
+def _load_behavior_sheets(path: Path | None) -> dict[str, np.ndarray]:
+    """Load (start, duration) interval rows from each sheet of a behavior xlsx.
+
+    Every worksheet is a behavior lane named by its sheet title. The first two
+    columns of each sheet hold (start_volume, duration_volume) intervals aligned
+    with the raw NPY volume index (time); rows with missing values are skipped.
+    """
     if path is None or not path.is_file():
         return {}
-    requested = (*STIMULUS_DATASETS, *BEHAVIOR_DATASETS)
-    datasets: dict[str, np.ndarray] = {}
-    with h5py.File(path, "r") as h5_file:
-        for name in requested:
-            if name not in h5_file:
+    sheets: dict[str, np.ndarray] = {}
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        for worksheet in workbook.worksheets:
+            rows: list[tuple[int, int]] = []
+            for row in worksheet.iter_rows(min_col=1, max_col=2, values_only=True):
+                if len(row) < 2 or row[0] is None or row[1] is None:
                 continue
-            values = np.asarray(h5_file[name][:], dtype=int)
-            if values.ndim != 2 or values.shape[1] < 2:
+                try:
+                    start = int(row[0])
+                    duration = int(row[1])
+                except (TypeError, ValueError):
                 continue
-            datasets[name] = values[:, :2]
-    return datasets
+                rows.append((start, duration))
+            if rows:
+                sheets[worksheet.title] = np.asarray(rows, dtype=int)
+    finally:
+        workbook.close()
+    return sheets
 
 
 def _write_error_timeline_html(
@@ -838,8 +892,7 @@ def _write_error_timeline_html(
     The anatomical point cloud is fixed at POINT_CLOUD_VOLUME_INDEX. Dragging
     the timeline slider directly updates the neurons whose corrected centers
     shifted beyond the error thresholds. There is deliberately no playback or
-    point-cloud animation. The lower panel marks stimulus and behavior
-    intervals.
+    point-cloud animation. The lower panel marks behavior intervals.
     """
     error_by_volume: dict[int, set[int]] = defaultdict(set)
     for event in events:
@@ -872,11 +925,11 @@ def _write_error_timeline_html(
     cloud_y = centers_xyz[plotted_ids, 1]
     cloud_z = centers_xyz[plotted_ids, 2]
 
-    interval_datasets = _load_interval_datasets(BEHAVIOR_H5_PATH)
+    behavior_sheets = _load_behavior_sheets(BEHAVIOR_XLSX_PATH)
 
-    # The timeline spans the full recording so every stimulus and behavior
-    # interval is visible; error highlights only exist within the analyzed
-    # volume range [start, stop).
+    # The timeline spans the full recording so every behavior interval is
+    # visible; error highlights only exist within the analyzed volume range
+    # [start, stop).
     timeline_start, timeline_stop = 0, sidecar.raw_t
 
     def clip_intervals(values: np.ndarray) -> list[tuple[int, int]]:
@@ -890,12 +943,7 @@ def _write_error_timeline_html(
                 clipped.append((first, last))
         return clipped
 
-    stimulus_intervals: list[tuple[int, int]] = []
-    for name in STIMULUS_DATASETS:
-        if name in interval_datasets:
-            stimulus_intervals.extend(clip_intervals(interval_datasets[name]))
-
-    behavior_names = [name for name in BEHAVIOR_DATASETS if name in interval_datasets]
+    behavior_names = list(behavior_sheets)
     lane_by_name = {name: lane + 1 for lane, name in enumerate(behavior_names)}
     num_lanes = len(behavior_names)
     lane_top = max(num_lanes + 0.5, 1.0)
@@ -925,7 +973,7 @@ def _write_error_timeline_html(
         vertical_spacing=0.03,
         subplot_titles=(
             "Point cloud with erroneous neurons highlighted over time",
-            "Stimulus and behavior timeline",
+            "Behavior timeline",
         ),
     )
 
@@ -986,7 +1034,7 @@ def _write_error_timeline_html(
                 x=xs,
                 y=ys,
                 mode="lines",
-                name=name.rsplit("/", 1)[-1],
+                name=name,
                 line={"color": color, "width": 12},
                 hoverinfo="skip",
             ),
@@ -995,36 +1043,8 @@ def _write_error_timeline_html(
         )
 
     # The timeline subplot uses the figure's primary xaxis/yaxis (the 3D
-    # subplot consumes ``scene``). Shapes must therefore anchor to "x"/"y"
-    # explicitly rather than via ``add_vrect``, which mishandles mixed 3D/2D
-    # grids.
-    for interval_start, interval_stop in stimulus_intervals:
-        figure.add_shape(
-            type="rect",
-            xref="x",
-            yref="y",
-            x0=interval_start,
-            x1=interval_stop,
-            y0=0,
-            y1=lane_top,
-            fillcolor="#90caf9",
-            opacity=0.3,
-            line_width=0,
-            layer="below",
-        )
-    if stimulus_intervals:
-        first_start, _ = stimulus_intervals[0]
-        figure.add_annotation(
-            xref="x",
-            yref="y",
-            x=first_start,
-            y=lane_top,
-            text="stimulus",
-            showarrow=False,
-            xanchor="left",
-            yanchor="bottom",
-            font={"size": 11, "color": "#2c6fbb"},
-        )
+    # subplot consumes ``scene``). The point-cloud marker must therefore anchor
+    # to "x"/"y" explicitly.
     if timeline_start <= POINT_CLOUD_VOLUME_INDEX < timeline_stop:
         figure.add_shape(
             type="line",
@@ -1071,7 +1091,7 @@ def _write_error_timeline_html(
     )
     figure.update_yaxes(
         tickvals=list(range(1, num_lanes + 1)),
-        ticktext=[name.rsplit("/", 1)[-1] for name in behavior_names],
+        ticktext=behavior_names,
         range=[0, lane_top],
         zeroline=False,
         showgrid=False,
@@ -1187,10 +1207,9 @@ def _write_error_timeline_html(
         "error_neurons": len(
             {neuron_id for ids in error_by_volume.values() for neuron_id in ids}
         ),
-        "stimulus_intervals": len(stimulus_intervals),
         "behavior_lanes": behavior_names,
         "behavior_interval_counts": {
-            name: len(clip_intervals(interval_datasets[name]))
+            name: len(clip_intervals(behavior_sheets[name]))
             for name in behavior_names
         },
         "orientation": orientation,
