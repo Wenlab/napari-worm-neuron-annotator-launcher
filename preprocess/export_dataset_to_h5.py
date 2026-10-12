@@ -9,7 +9,7 @@ files are never overwritten.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from itertools import chain
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,6 +26,7 @@ from foreground_source import (
     mask_for_record,
     validate_configuration,
 )
+from tiff_source import TiffFrameSource
 
 # ---------------------------------------------------------------------------
 # Frequently edited configuration
@@ -33,11 +34,12 @@ from foreground_source import (
 
 # Numbered TIFF directory or multi-page TIFF stack. Set the acquisition's real
 # source path and volume numbers before exporting.
-TIFF_PATH = Path(r"/path/to/tiff/source")
+TIFF_PATH = Path(r"\\192.168.1.192\Jinghao-Wang-2026\20260821_chemical_closeloop\w3_WEN1277_CuSO4-test_20260821_171723\w3_WEN1277_CuSO4-test_2026-08-21_17-17-53\0_Camera-Red_VSC-10629")
 ROI_SOURCE_MODE: Literal["dynamics", "realtime-results"] | None = None
 ROI_SOURCE_PATH: Path | None = None
-OUTPUT_DIR = Path("data/20260923_w1")
-SELECTED_VOLUMES = [0]
+OUTPUT_DIR = Path("data/")
+# None or an empty sequence selects all complete acquisition volumes from 0.
+SELECTED_VOLUMES: Sequence[int] | None = None
 
 # "image" uses the per-volume XY maximum-intensity projection. "roi" uses
 # projected ROI boxes; "auto" chooses ROI when an ROI source is configured.
@@ -78,13 +80,37 @@ CLOSING_XY_PIXELS = 32
 HDF5_COMPRESSION_LEVEL = 3
 
 
+def _resolve_selected_volumes(
+    tiff_path: Path,
+    selected_volumes: Sequence[int] | None,
+    frames_per_volume: int,
+) -> tuple[int, ...]:
+    if selected_volumes is not None and len(selected_volumes) > 0:
+        return tuple(selected_volumes)
+    if frames_per_volume <= 0:
+        raise ValueError("FRAMES_PER_VOLUME must be positive")
+    with TiffFrameSource(tiff_path) as source:
+        frame_count = source.frame_count
+    volume_count, trailing_frames = divmod(frame_count, frames_per_volume)
+    if volume_count == 0:
+        raise ValueError(
+            f"No complete volumes: {frame_count} TIFF frames, "
+            f"FRAMES_PER_VOLUME={frames_per_volume}"
+        )
+    if trailing_frames:
+        print(f"Skipping {trailing_frames} trailing frames of an incomplete volume")
+    return tuple(range(volume_count))
+
+
 def _foreground_config() -> ForegroundConfig:
     return ForegroundConfig(
         tiff_path=TIFF_PATH,
         roi_source_mode=ROI_SOURCE_MODE,
         roi_source_path=ROI_SOURCE_PATH,
         foreground_mode=FOREGROUND_MODE,
-        selected_volumes=tuple(SELECTED_VOLUMES),
+        selected_volumes=_resolve_selected_volumes(
+            TIFF_PATH, SELECTED_VOLUMES, FRAMES_PER_VOLUME
+        ),
         frames_per_volume=FRAMES_PER_VOLUME,
         z_start_frame=Z_START_FRAME,
         z_end_frame=Z_END_FRAME,
@@ -216,6 +242,7 @@ def main() -> None:
         raise ValueError("HDF5_COMPRESSION_LEVEL must be between 1 and 22")
     output_path = OUTPUT_DIR / "images.h5"
     print(f"Foreground mode: {config.mask_mode}")
+    print(f"Selected volumes: {len(config.selected_volumes)}")
     print(f"Output directory: {OUTPUT_DIR}")
     records = iter_volume_records(config)
     try:
